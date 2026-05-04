@@ -3115,11 +3115,29 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       this._coalescedToolCallIds.clear()
 
       // Drain any user-injected messages (from mid-run prompts / spec iteration).
-      // Insert them as user turns so the model sees the updated objective immediately.
-      while (this._pendingInjections.length > 0) {
-        const injected = this._pendingInjections.shift()
-        messages.push({ role: 'user', content: `[User update]: ${injected}` })
-        this.send('qwen-event', { type: 'user-injection', content: injected })
+      // Insert them as user messages so the model sees the updated objective.
+      // The model MUST acknowledge the injection, respond to it, and then
+      // continue working on the main task from the new state.
+      if (this._pendingInjections.length > 0) {
+        const allInjections = []
+        while (this._pendingInjections.length > 0) {
+          allInjections.push(this._pendingInjections.shift())
+        }
+        // Combine all pending injections into a single user turn
+        const combined = allInjections.join('\n\n')
+        messages.push({ role: 'user', content: `[User update mid-run]: ${combined}` })
+        // Add a system instruction so the model acknowledges and follows the injection
+        messages.push({
+          role: 'system',
+          content: 'IMPORTANT: The user just sent a message while you were working. You MUST:\n' +
+            '1. Acknowledge the user\'s message — briefly confirm you received it.\n' +
+            '2. Follow any instructions in the message (e.g. change approach, fix something, answer a question).\n' +
+            '3. After addressing the user\'s message, continue working on the main task from this new state.\n' +
+            'Do NOT ignore the user\'s message. Respond to it first, then resume your work.',
+        })
+        for (const injected of allInjections) {
+          this.send('qwen-event', { type: 'user-injection', content: injected })
+        }
       }
 
       // ── Performance: inject deferred LSP diagnostics from previous turn ──

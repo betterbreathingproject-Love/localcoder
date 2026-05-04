@@ -1138,13 +1138,16 @@ class Orchestrator extends EventEmitter {
       : `[User update mid-run]: ${trimmed}`
 
     // Forward to all currently running agents via their bridge's inject()
+    let deliveredCount = 0
     for (const [, entry] of this._agentPool._runningTasks || new Map()) {
       if (entry.agent && typeof entry.agent.inject === 'function') {
         entry.agent.inject(trimmed)
+        deliveredCount++
       }
     }
 
-    this.emit('user-injection', { message: trimmed })
+    console.log(`[orchestrator] inject(): delivered to ${deliveredCount} running agent(s), queued for future tasks`)
+    this.emit('user-injection', { message: trimmed, deliveredCount })
   }
 
   // --- Query methods ---

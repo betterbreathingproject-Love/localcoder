@@ -127,6 +127,15 @@ function register(ipcMain, { getMainWindow, getCurrentProject, getAgentPool, get
       }
       getAgentPool().on('agent-event', _agentEventHandler)
 
+      // Forward user-injection events so the renderer knows the agent received the message
+      orchestratorInstance.on('user-injection', (evt) => {
+        console.log('[orchestrator] User injection received:', evt.message?.slice(0, 80))
+        getMainWindow()?.webContents.send('orchestrator-agent-event', {
+          channel: 'qwen-event',
+          data: { type: 'user-injection-ack', message: evt.message },
+        })
+      })
+
       orchestratorInstance.on('task-error', (evt) => {
         console.error('[orchestrator] Task error:', evt.nodeId, evt.error)
         getMainWindow()?.webContents.send('task-status-event', { nodeId: evt.nodeId, status: 'failed', error: evt.error })

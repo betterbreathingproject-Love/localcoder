@@ -509,6 +509,44 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .tg-node-activity { font-size: 9px; color: var(--muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; opacity: 0.7; font-style: italic; }
 .orch-agent-badge { font-size: 10px; font-family: 'SF Mono', monospace; color: var(--accent2, #f5a623); background: rgba(245,166,35,0.15); padding: 1px 6px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
 
+/* ── inline task errors, skip reasons, and server events ───────────────────── */
+.tg-node-error {
+  font-size: 10px;
+  color: var(--red, #ef4444);
+  padding: 2px 8px 3px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+.tg-node-skip {
+  font-size: 10px;
+  color: var(--muted, #888);
+  padding: 2px 8px 3px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+.tg-node-event {
+  font-size: 10px;
+  padding: 2px 8px 2px;
+  margin-bottom: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tg-node-event.crash {
+  color: var(--yellow, #f59e0b);
+  opacity: 0.85;
+}
+.tg-node-event.recovered {
+  color: var(--green, #22c55e);
+  opacity: 0.8;
+}
+
 /* ── spec workflow panel (sidebar) ──────────────────────────────────────────── */
 .spec-phase-badge { font-size: 9px; padding: 2px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); background: var(--bg3); }
 .spec-phase-badge.completed { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.2); }

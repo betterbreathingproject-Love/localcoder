@@ -112,14 +112,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     // After a crash restart, the model was reloaded automatically — update UI
     if (s.running && s.reloaded && s.modelId) {
       setLoadedModel(s.modelId)
-      appendMsg('system', `✅ Server recovered — model reloaded: ${_formatModelName(s.modelId)}`)
+      // Attach recovery event inline to the currently in-progress task node
+      _attachEventToActiveTask('recovered', `Server recovered — model reloaded: ${_formatModelName(s.modelId)}`)
     }
   })
 
   // Show a visible banner when the server crashes and is recovering
   window.app.onServerCrashed?.((s) => {
     if (s.willRestart) {
-      appendMsg('system', `⚠️ MLX server crashed (${s.reason || 'unknown'}) — restarting in 5s and reloading model...`)
+      // Attach crash event inline to the currently in-progress task node
+      const msg = `MLX server crashed (${s.reason || 'unknown'}) — restarting in 5s and reloading model...`
+      _attachEventToActiveTask('crash', msg)
       setServerStatus(false)
     }
   })
@@ -1411,7 +1414,7 @@ function sendAgent() {
         appendMsg('system', `⚠️ Inject failed: ${result.error}`)
       } else {
         appendMsg('user', esc(prompt))
-        appendMsg('system', `💬 Injected into running agents — they'll see this at the next turn boundary.`)
+        appendMsg('system', `💬 Injected into running agents — the agent will acknowledge and respond to your message at the next turn boundary.`)
       }
     })
     return
@@ -2377,6 +2380,17 @@ async function sendAgentMode(prompt, opts = {}) {
                 }
                 break
               }
+              case 'user-injection-ack': {
+                if (ev.message) {
+                  const out = document.getElementById('agentOutput')
+                  out.insertAdjacentHTML('beforeend',
+                    `<div class="msg-system" style="color:var(--green,#4ade80);font-size:12px;padding:4px 12px">
+                      ✅ Agent received your message — will respond at the next turn boundary.
+                    </div>`)
+                  scrollOutput()
+                }
+                break
+              }
               case 'session-start': {
                 // Find the current in-progress task from the todo panel or task graph
                 const activeTask = currentTodos.find(t => t.status === 'in_progress')
@@ -2631,7 +2645,8 @@ async function sendAgentMode(prompt, opts = {}) {
                 scrollOutput()
                 break
               case 'error':
-                appendMsg('system', '❌ Task error: ' + ev.error)
+                // Error is stored inline on the task graph node via task-status-event;
+                // no need to append a system message to the chat.
                 break
             }
           }
@@ -3770,6 +3785,28 @@ let selectedTaskNodeId = null
 let currentTasksPath = null
 let _currentAgentType = null
 
+/**
+ * Attach a server event (crash/recovery) inline to the currently in-progress
+ * task graph node so it renders next to the relevant task instead of in the chat.
+ */
+function _attachEventToActiveTask(type, message) {
+  if (currentTaskGraph && currentTaskGraph.nodes) {
+    const activeId = Object.keys(currentTaskGraph.nodes).find(
+      id => currentTaskGraph.nodes[id].status === 'in_progress'
+    )
+    if (activeId) {
+      const node = currentTaskGraph.nodes[activeId]
+      if (!node._events) node._events = []
+      node._events.push({ type, message })
+      renderTaskGraph(currentTaskGraph)
+      return
+    }
+  }
+  // Fallback: no active task — show in chat so the event isn't lost
+  const icon = type === 'recovered' ? '✅' : '⚠️'
+  appendMsg('system', `${icon} ${message}`)
+}
+
 async function loadTaskGraph(filePath) {
   if (!currentProject) return
   const tasksPath = filePath || currentTasksPath || currentProject + '/tasks.md'
@@ -3831,12 +3868,23 @@ function renderTaskGraph(graph) {
     const dotClass = isLiveInProgress && id !== animatedNodeId
       ? 'in_progress static'
       : displayStatus
+    // Inline error/skip reason displayed below the node row
+    const inlineError = node._error
+      ? `<div class="tg-node-error" style="padding-left:${22 + indent}px">❌ ${esc(node._error)}</div>`
+      : ''
+    const inlineSkip = !node._error && node._skipReason
+      ? `<div class="tg-node-skip" style="padding-left:${22 + indent}px">⏭ ${esc(node._skipReason)}</div>`
+      : ''
+    // Server crash/recovery events attached to this node
+    const crashLines = (node._events || []).map(e =>
+      `<div class="tg-node-event ${e.type === 'recovered' ? 'recovered' : 'crash'}" style="padding-left:${22 + indent}px">${e.type === 'recovered' ? '🟢' : '⚠️'} ${esc(e.message)}</div>`
+    ).join('')
     return `<div class="tg-node status-${displayStatus}" data-node-id="${id}" style="padding-left:${8 + indent}px" onclick="showTaskDetail('${id}')">
       <span class="tg-node-dot ${dotClass}"></span>
       <span class="tg-node-id">${esc(id)}</span>
       <span class="tg-node-title">${esc(node.title)}</span>
       ${agentTag}${elapsedTag}${activityTag}
-    </div>`
+    </div>${crashLines}${inlineError}${inlineSkip}`
   }).join('')
 
   // Auto-scroll the active (in_progress) task into view
@@ -3855,11 +3903,17 @@ function showTaskDetail(nodeId) {
   }
   const node = currentTaskGraph.nodes[nodeId]
   const agentType = node.agentType || node.metadata?.agentType || 'general'
+  const errorLine = node._error ? `<div style="color:var(--red);margin-top:4px"><strong>Error:</strong> ${esc(node._error)}</div>` : ''
+  const skipLine = node._skipReason ? `<div style="color:var(--muted);margin-top:4px"><strong>Skipped:</strong> ${esc(node._skipReason)}</div>` : ''
+  const eventsHtml = (node._events || []).map(e =>
+    `<div style="color:${e.type === 'recovered' ? 'var(--green)' : 'var(--yellow)'};margin-top:2px">${e.type === 'recovered' ? '🟢' : '⚠️'} ${esc(e.message)}</div>`
+  ).join('')
   content.innerHTML = `<div><strong>ID:</strong> ${esc(node.id)}</div>
     <div><strong>Title:</strong> ${esc(node.title)}</div>
     <div><strong>Status:</strong> <span class="tg-node-dot ${node.status}" style="display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle"></span> ${node.status}</div>
     <div><strong>Agent Type:</strong> ${agentType}</div>
-    <div><strong>Dependencies:</strong> ${(node.dependencies||[]).join(', ') || 'none'}</div>`
+    <div><strong>Dependencies:</strong> ${(node.dependencies||[]).join(', ') || 'none'}</div>
+    ${errorLine}${skipLine}${eventsHtml}`
 }
 
 async function taskGraphRun() {
@@ -3956,9 +4010,16 @@ if (window.app.onTaskStatusEvent) {
       if (currentTaskGraph.nodes[evt.nodeId]) {
         currentTaskGraph.nodes[evt.nodeId].status = evt.status
         if (evt.agentType) currentTaskGraph.nodes[evt.nodeId].agentType = evt.agentType
+        // Store error/reason inline on the node for inline display
+        if (evt.error) currentTaskGraph.nodes[evt.nodeId]._error = evt.error
+        if (evt.reason) currentTaskGraph.nodes[evt.nodeId]._skipReason = evt.reason
         // Record start time for elapsed timer
         if (evt.status === 'in_progress') {
           currentTaskGraph.nodes[evt.nodeId]._startTime = Date.now()
+          // Clear any previous error when retrying
+          delete currentTaskGraph.nodes[evt.nodeId]._error
+          delete currentTaskGraph.nodes[evt.nodeId]._skipReason
+          currentTaskGraph.nodes[evt.nodeId]._events = []
           // Clear the todo panel when a new task starts — the agent will
           // populate it with its subtasks via todo-bootstrap immediately after.
           // This fires before the agent runs so bootstrap always wins.
@@ -4867,6 +4928,18 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         }
         break
       }
+      case 'user-injection-ack': {
+        // The orchestrator confirmed the injection was delivered to running agents
+        if (ev.message) {
+          const out = document.getElementById('agentOutput')
+          out.insertAdjacentHTML('beforeend',
+            `<div class="msg-system" style="color:var(--green,#4ade80);font-size:12px;padding:4px 12px">
+              ✅ Agent received your message — will respond at the next turn boundary.
+            </div>`)
+          scrollOutput()
+        }
+        break
+      }
       case 'session-start': {
         const activeTask = currentTodos.find(t => t.status === 'in_progress')
         const agentType = _currentAgentType
@@ -5247,7 +5320,8 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         scrollOutput()
         break
       case 'error':
-        appendMsg('system', '❌ Task error: ' + ev.error)
+        // Error is stored inline on the task graph node via task-status-event;
+        // no need to append a system message to the chat.
         break
     }
   }
