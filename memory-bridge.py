@@ -2030,6 +2030,8 @@ def _extract_generate(prompt: str, max_tokens: int = 400) -> str:
     Holds the Metal GPU lock to prevent concurrent Metal operations with the
     main model's stream_generate (which runs in a separate thread).
     """
+    import threading as _thr, sys as _sys
+    _tid = _thr.current_thread().name
     metal_lock = _get_metal_lock()
 
     # Check both the flag and the processor type at runtime (self-heal for models
@@ -2045,12 +2047,16 @@ def _extract_generate(prompt: str, max_tokens: int = 400) -> str:
         # Model loaded via mlx_vlm — use vlm generate with no image
         from mlx_vlm import generate as vlm_generate
         if metal_lock:
+            print(f"[metal-trace] _extract_generate(vlm): acquiring _metal_lock (thread={_tid})", file=_sys.stderr, flush=True)
             with metal_lock:
+                print(f"[metal-trace] _extract_generate(vlm): _metal_lock acquired (thread={_tid})", file=_sys.stderr, flush=True)
                 result = vlm_generate(
                     _extract_model, _extract_processor,
                     prompt=prompt, max_tokens=max_tokens, verbose=False,
                 )
+                print(f"[metal-trace] _extract_generate(vlm): generate done, releasing lock (thread={_tid})", file=_sys.stderr, flush=True)
         else:
+            print(f"[metal-trace] _extract_generate(vlm): NO metal_lock! (thread={_tid})", file=_sys.stderr, flush=True)
             result = vlm_generate(
                 _extract_model, _extract_processor,
                 prompt=prompt, max_tokens=max_tokens, verbose=False,
@@ -2060,12 +2066,17 @@ def _extract_generate(prompt: str, max_tokens: int = 400) -> str:
     else:
         import mlx_lm
         if metal_lock:
+            print(f"[metal-trace] _extract_generate(lm): acquiring _metal_lock (thread={_tid})", file=_sys.stderr, flush=True)
             with metal_lock:
-                return mlx_lm.generate(
+                print(f"[metal-trace] _extract_generate(lm): _metal_lock acquired (thread={_tid})", file=_sys.stderr, flush=True)
+                result = mlx_lm.generate(
                     _extract_model, _extract_processor,
                     prompt=prompt, max_tokens=max_tokens, verbose=False,
                 )
+                print(f"[metal-trace] _extract_generate(lm): generate done, releasing lock (thread={_tid})", file=_sys.stderr, flush=True)
+                return result
         else:
+            print(f"[metal-trace] _extract_generate(lm): NO metal_lock! (thread={_tid})", file=_sys.stderr, flush=True)
             return mlx_lm.generate(
                 _extract_model, _extract_processor,
                 prompt=prompt, max_tokens=max_tokens, verbose=False,

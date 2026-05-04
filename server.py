@@ -89,6 +89,45 @@ _inference_semaphore: asyncio.Semaphore | None = None  # initialized at startup
 # cache build) must hold this lock.
 _metal_lock = threading.Lock()
 
+# ── Crash diagnostics: log Metal state on fatal signals ───────────────────────
+# SIGABRT/SIGSEGV from Metal can't be prevented, but we can log what was
+# happening right before the crash to help diagnose the root cause.
+_metal_trace_state = {"last_op": "idle", "last_thread": None, "lock_held_by": None}
+
+def _crash_signal_handler(signum, frame):
+    """Log diagnostic info on SIGABRT/SIGSEGV before the process dies."""
+    sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+    try:
+        import traceback
+        print(f"\n{'='*60}", file=sys.stderr, flush=True)
+        print(f"[CRASH] Signal {sig_name} received!", file=sys.stderr, flush=True)
+        print(f"[CRASH] Metal trace state: {_metal_trace_state}", file=sys.stderr, flush=True)
+        print(f"[CRASH] _metal_lock locked: {_metal_lock.locked()}", file=sys.stderr, flush=True)
+        print(f"[CRASH] Active threads:", file=sys.stderr, flush=True)
+        for t in threading.enumerate():
+            print(f"[CRASH]   {t.name} (daemon={t.daemon}, alive={t.is_alive()})", file=sys.stderr, flush=True)
+        try:
+            import mlx.core as mx
+            print(f"[CRASH] Metal active memory: {mx.metal.get_active_memory() / (1024**3):.2f} GB", file=sys.stderr, flush=True)
+            print(f"[CRASH] Metal peak memory: {mx.metal.get_peak_memory() / (1024**3):.2f} GB", file=sys.stderr, flush=True)
+        except Exception:
+            print(f"[CRASH] Could not read Metal memory (GPU may be in bad state)", file=sys.stderr, flush=True)
+        print(f"[CRASH] Stack trace:", file=sys.stderr, flush=True)
+        traceback.print_stack(frame, file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+    # Re-raise with default handler so the process actually terminates
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+# Install crash handlers — SIGABRT is the one MLX Metal crashes produce
+try:
+    signal.signal(signal.SIGABRT, _crash_signal_handler)
+    signal.signal(signal.SIGSEGV, _crash_signal_handler)
+except Exception:
+    pass  # some signals can't be caught on all platforms
+
 
 def _get_inference_semaphore() -> asyncio.Semaphore:
     """Lazy-init the semaphore on the running event loop."""
@@ -1542,7 +1581,14 @@ async def chat_completions(req: ChatRequest):
     # can trigger "addCompletedHandler: on committed buffer" → SIGABRT.
     def _pre_inference_metal_checks():
         """Run Metal memory checks under _metal_lock. Returns error string or None."""
+        import threading as _thr
+        _tid = _thr.current_thread().name
+        _metal_trace_state["last_op"] = "_pre_inference_metal_checks:waiting_lock"
+        _metal_trace_state["last_thread"] = _tid
+        print(f"[metal-trace] _pre_inference_metal_checks: acquiring _metal_lock (thread={_tid})", file=sys.stderr, flush=True)
         with _metal_lock:
+            _metal_trace_state["last_op"] = "_pre_inference_metal_checks:checking"
+            _metal_trace_state["lock_held_by"] = _tid
             if _should_clear_metal_cache():
                 try:
                     import mlx.core as mx
@@ -1742,7 +1788,15 @@ async def chat_completions(req: ChatRequest):
             await sem.acquire()
 
             def run_stream():
+                import threading as _thr
+                _tid = _thr.current_thread().name
+                _metal_trace_state["last_op"] = "run_stream:waiting_lock"
+                _metal_trace_state["last_thread"] = _tid
+                print(f"[metal-trace] run_stream: acquiring _metal_lock (thread={_tid})", file=sys.stderr, flush=True)
                 with _metal_lock:
+                    _metal_trace_state["last_op"] = "run_stream:stream_generate"
+                    _metal_trace_state["lock_held_by"] = _tid
+                    print(f"[metal-trace] run_stream: _metal_lock acquired, starting stream_generate (thread={_tid})", file=sys.stderr, flush=True)
                     try:
                         gen = stream_generate(_model, _processor, _prompt_for_inference,
                                              draft_model=_effective_draft, **kwargs)
@@ -1778,8 +1832,12 @@ async def chat_completions(req: ChatRequest):
                         # from hitting "addCompletedHandler: on committed buffer".
                         try:
                             import mlx.core as mx
+                            print(f"[metal-trace] run_stream finally: calling mx.synchronize() (thread={_tid})", file=sys.stderr, flush=True)
+                            _metal_trace_state["last_op"] = "run_stream:synchronize"
                             mx.synchronize()
-                        except Exception:
+                            print(f"[metal-trace] run_stream finally: mx.synchronize() done (thread={_tid})", file=sys.stderr, flush=True)
+                        except Exception as _sync_err:
+                            print(f"[metal-trace] run_stream finally: mx.synchronize() FAILED: {_sync_err} (thread={_tid})", file=sys.stderr, flush=True)
                             # Fallback: brief sleep if synchronize fails
                             import time
                             time.sleep(0.05)
@@ -1787,11 +1845,16 @@ async def chat_completions(req: ChatRequest):
                         if _should_clear_metal_cache():
                             try:
                                 import mlx.core as mx
+                                print(f"[metal-trace] run_stream finally: clearing Metal cache (thread={_tid})", file=sys.stderr, flush=True)
                                 mx.metal.clear_cache()
                             except Exception:
                                 pass
+                        print(f"[metal-trace] run_stream: releasing _metal_lock (thread={_tid})", file=sys.stderr, flush=True)
+                        _metal_trace_state["lock_held_by"] = None
                     # Use try/except on call_soon_threadsafe in case the event loop
                     # was closed before the thread finished (e.g. server shutdown).
+                _metal_trace_state["last_op"] = "run_stream:done"
+                print(f"[metal-trace] run_stream: _metal_lock released, signaling done+sem.release (thread={_tid})", file=sys.stderr, flush=True)
                 try:
                     loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
                 except Exception:
@@ -1803,6 +1866,7 @@ async def chat_completions(req: ChatRequest):
                 except Exception:
                     # Loop is gone — release directly to unblock any waiting coroutine
                     sem.release()
+                print(f"[metal-trace] run_stream: sem.release scheduled (thread={_tid})", file=sys.stderr, flush=True)
 
             loop.run_in_executor(None, run_stream)
 
@@ -2151,7 +2215,15 @@ async def chat_completions(req: ChatRequest):
                     kwargs['prompt_cache'] = _ns_prefix_cache
 
     def _run_generate():
+        import threading as _thr
+        _tid = _thr.current_thread().name
+        _metal_trace_state["last_op"] = "_run_generate:waiting_lock"
+        _metal_trace_state["last_thread"] = _tid
+        print(f"[metal-trace] _run_generate: acquiring _metal_lock (thread={_tid})", file=sys.stderr, flush=True)
         with _metal_lock:
+            _metal_trace_state["last_op"] = "_run_generate:generate"
+            _metal_trace_state["lock_held_by"] = _tid
+            print(f"[metal-trace] _run_generate: _metal_lock acquired (thread={_tid})", file=sys.stderr, flush=True)
             if _ns_draft is not None:
                 result = generate(_model, _processor, _ns_prompt, draft_model=_ns_draft, **kwargs)
             else:
