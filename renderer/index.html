@@ -156,6 +156,39 @@
           </div>
         </div>
 
+        <div class="sp-header" style="margin-top:4px"><span class="section-label">OPENROUTER</span></div>
+        <div class="setup-compact" id="openrouterSettings">
+          <div class="sc-field">
+            <span class="sc-label">Enable</span>
+            <label class="cs-toggle-wrap">
+              <input type="checkbox" id="or-enabled" onchange="saveOpenRouterSettings()">
+              <span style="font-size:11px;color:var(--muted)">Use OpenRouter instead of local MLX</span>
+            </label>
+          </div>
+          <div id="or-fields" style="display:none">
+            <div class="sc-field">
+              <span class="sc-label">API Key</span>
+              <input type="password" id="or-apikey" class="cs-input cs-wide" placeholder="sk-or-..." onchange="saveOpenRouterSettings()">
+            </div>
+            <div class="sc-field">
+              <span class="sc-label"></span>
+              <a href="#" onclick="window.app.openExternal('https://openrouter.ai/keys');return false" style="font-size:10px;color:var(--accent2)">Get API key at openrouter.ai →</a>
+            </div>
+            <div class="sc-field">
+              <span class="sc-label">Model</span>
+              <input type="text" id="or-model" class="cs-input cs-wide" placeholder="e.g. anthropic/claude-sonnet-4-5" onchange="saveOpenRouterSettings()">
+            </div>
+            <div class="sc-field">
+              <span class="sc-label"></span>
+              <a href="#" onclick="window.app.openExternal('https://openrouter.ai/models');return false" style="font-size:10px;color:var(--accent2)">Browse models at openrouter.ai →</a>
+            </div>
+            <div class="sc-field" id="or-status-row">
+              <span class="sc-label">Status</span>
+              <span id="or-status" style="font-size:11px;color:var(--muted)">Not configured</span>
+            </div>
+          </div>
+        </div>
+
         <div class="sp-header" style="margin-top:4px"><span class="section-label">CONTEXT SETTINGS</span></div>
         <div class="setup-compact" id="contextSettings">
           <div class="sc-field">
@@ -731,6 +764,11 @@
           <div class="model-bar-label">
             <span class="model-bar-role">Primary Model</span>
             <span class="model-bar-desc">Reasoning, code generation, and tool use</span>
+          </div>
+          <!-- OpenRouter active indicator — shown when OpenRouter is the provider -->
+          <div id="openrouterBadge" style="display:none;align-items:center;gap:6px;padding:4px 8px;background:var(--accent2,#7c6af7)22;border:1px solid var(--accent2,#7c6af7)44;border-radius:6px;font-size:11px;color:var(--accent2,#7c6af7);cursor:pointer;" onclick="showTab('settings')" title="OpenRouter active — click to configure">
+            <span>🌐</span>
+            <span id="openrouterBadgeModel">OpenRouter</span>
           </div>
           <div class="model-switcher-current" id="modelSwitcherBtn" onclick="toggleModelSwitcher()">
             <span class="model-switcher-icon">🤖</span>

@@ -12,7 +12,7 @@ class RemoteJobController extends EventEmitter {
    * @param {number|string} opts.chatId - Paired Telegram chat ID
    * @param {object} opts.recordingManager - RecordingManager instance
    */
-  constructor({ telegramBot, chatId, recordingManager, miniAppUrl, sharedBridge, mainWindow, cwdGetter }) {
+  constructor({ telegramBot, chatId, recordingManager, miniAppUrl, sharedBridge, mainWindow, cwdGetter, specRunner }) {
     super()
     this._bot = telegramBot
     this._chatId = chatId
@@ -22,6 +22,7 @@ class RemoteJobController extends EventEmitter {
     this._sharedBridge = sharedBridge || null
     this._mainWindow = mainWindow || null
     this._cwdGetter = typeof cwdGetter === 'function' ? cwdGetter : null
+    this._specRunner = specRunner || null
     this._state = 'idle'  // 'idle' | 'running' | 'completed' | 'failed'
     this._jobId = null
     this._bridge = null
@@ -260,8 +261,53 @@ class RemoteJobController extends EventEmitter {
         }
         break
       }
+      case 'spec': {
+        // /spec [name] — list available specs or run a specific spec by name
+        if (!this._specRunner) {
+          await this._bot.sendMessage(this._chatId, 'Spec execution not available (no specRunner configured).')
+          return
+        }
+        if (!args || !args.trim()) {
+          // List available specs
+          const specs = this._specRunner.listSpecs ? this._specRunner.listSpecs() : []
+          if (specs.length === 0) {
+            await this._bot.sendMessage(this._chatId, 'No specs found. Create a spec in the app first.')
+          } else {
+            const list = specs.map((s, i) => `${i + 1}. ${s.name}`).join('\n')
+            await this._bot.sendMessage(this._chatId, `Available specs:\n${list}\n\nUse /spec <name> to run one.`)
+          }
+          return
+        }
+        // Run the named spec
+        const specName = args.trim()
+        this._jobId = `spec_${Date.now()}`
+        this._state = 'running'
+        await this._bot.sendMessage(this._chatId, `Starting spec: ${specName}`)
+        this._specRunner.runSpec(specName).then(() => {
+          this._state = 'completed'
+          this._bot.sendMessage(this._chatId, `Spec "${specName}" completed.`).catch(() => {})
+        }).catch((err) => {
+          this._state = 'failed'
+          this._bot.sendMessage(this._chatId, `Spec "${specName}" failed: ${err.message}`).catch(() => {})
+        })
+        break
+      }
+      case 'help': {
+        const helpText = [
+          '📋 Available commands:',
+          '/run <prompt> — run an agent job',
+          '/stop — stop the current job',
+          '/status — check job status',
+          '/spec — list available specs',
+          '/spec <name> — run a spec',
+          '/screenshot — take a browser screenshot',
+          '/app — open the mini app',
+        ].join('\n')
+        await this._bot.sendMessage(this._chatId, helpText)
+        break
+      }
       default:
-        await this._bot.sendMessage(this._chatId, `Unknown command: /${command}`)
+        await this._bot.sendMessage(this._chatId, `Unknown command: /${command}\n\nSend /help for available commands.`)
     }
   }
 

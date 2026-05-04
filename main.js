@@ -22,6 +22,7 @@ const { TelegramBot } = require('./telegram-bot')
 const { RecordingManager } = require('./recording-manager')
 const { RemoteJobController } = require('./remote-job-controller')
 const { MiniAppServer } = require('./telegram-miniapp-server')
+const { listSpecs } = require('./spec-workflow')
 
 nativeTheme.themeSource = 'dark'
 
@@ -714,6 +715,60 @@ function createWindow() {
   telegramBot = new TelegramBot({ appDataDir })
   recordingManager = new RecordingManager({ baseDir: path.join(appDataDir, 'telegram-recordings') })
 
+  /**
+   * Build a specRunner object for RemoteJobController.
+   * Provides listSpecs() and runSpec(name) backed by the real spec-workflow
+   * and task-graph-execute IPC handler.
+   * @returns {{ listSpecs: function, runSpec: function }}
+   */
+  function _makeSpecRunner() {
+    return {
+      listSpecs() {
+        if (!currentProject) return []
+        try { return listSpecs(currentProject) } catch { return [] }
+      },
+      async runSpec(specName) {
+        const nodePath = require('node:path')
+        const fs = require('node:fs')
+        const fsp = require('node:fs/promises')
+        const { parseTaskGraph } = require('./task-graph')
+        const { Orchestrator } = require('./orchestrator')
+        if (!currentProject) throw new Error('No project open')
+        const specDir = nodePath.join(currentProject, '.maccoder', 'specs', specName)
+        const tasksPath = nodePath.join(specDir, 'tasks.md')
+        if (!fs.existsSync(tasksPath)) throw new Error(`No tasks.md found for spec "${specName}"`)
+
+        const md = await fsp.readFile(tasksPath, 'utf-8')
+        const graph = parseTaskGraph(md)
+
+        let specContext = ''
+        try {
+          const reqPath = nodePath.join(specDir, 'requirements.md')
+          const designPath = nodePath.join(specDir, 'design.md')
+          if (fs.existsSync(reqPath)) specContext += '## Requirements\n\n' + fs.readFileSync(reqPath, 'utf-8') + '\n\n'
+          if (fs.existsSync(designPath)) specContext += '## Design\n\n' + fs.readFileSync(designPath, 'utf-8') + '\n\n'
+        } catch { /* optional */ }
+
+        const orch = new Orchestrator({
+          taskGraph: graph,
+          agentPool,
+          tasksFilePath: tasksPath,
+          specContext,
+          lspManager,
+          projectDir: currentProject,
+          getCalibrationProfile: ipcServer.getCalibrationProfile || null,
+        })
+        orch.on('task-status-event', (evt) => {
+          mainWindow?.webContents.send('task-status-event', evt)
+        })
+        orch.on('completed', () => {
+          mainWindow?.webContents.send('orchestrator-completed')
+        })
+        return orch.start()
+      },
+    }
+  }
+
   // Load saved config and auto-start if valid
   const savedConfig = telegramBot.loadConfig()
   if (savedConfig && savedConfig.token && savedConfig.pairedChatId) {
@@ -735,6 +790,7 @@ function createWindow() {
         sharedBridge: qwenBridge,
         mainWindow,
         cwdGetter: () => currentProject,
+        specRunner: _makeSpecRunner(),
       })
       remoteJobController.on('telegram-unavailable', ({ reason, recordingPath }) => {
         mainWindow?.webContents.send('telegram-unavailable', { reason, recordingPath })
@@ -755,6 +811,7 @@ function createWindow() {
       sharedBridge: qwenBridge,
       mainWindow,
       cwdGetter: () => currentProject,
+      specRunner: _makeSpecRunner(),
     })
     remoteJobController.on('telegram-unavailable', ({ reason, recordingPath }) => {
       mainWindow?.webContents.send('telegram-unavailable', { reason, recordingPath })
@@ -833,6 +890,7 @@ function createWindow() {
             sharedBridge: qwenBridge,
             mainWindow,
             cwdGetter: () => currentProject,
+            specRunner: _makeSpecRunner(),
           })
         } else {
           // Create a minimal stub controller for the mini app to work standalone
@@ -954,11 +1012,11 @@ function createWindow() {
               // Continue anyway — _waitForServer in DirectBridge will retry
             }
 
-            // Hook into qwen events to capture logs for the mini app and broadcast to WS clients
+            // Hook into qwen events to update controller state for polling.
+            // The persistent miniAppQwenListener (set up after miniAppServer.start())
+            // already forwards all qwen-events to the mini app — we only need to
+            // track job state transitions here.
             const logHandler = (_, data) => {
-              if (!miniAppServer) return
-              miniAppServer._handleQwenEvent(data)
-              // Also update controller state for polling
               if (data.type === 'done' || data.type === 'finish') {
                 remoteJobController._state = 'completed'
                 mainWindow?.webContents.off('qwen-event', logHandler)
@@ -976,18 +1034,38 @@ function createWindow() {
               .then(() => {
                 if (remoteJobController._state === 'running') {
                   remoteJobController._state = 'completed'
-                  miniAppServer?._handleQwenEvent({ type: 'done' })
                 }
                 mainWindow?.webContents.off('qwen-event', logHandler)
               })
               .catch((err) => {
                 remoteJobController._state = 'failed'
-                miniAppServer?._handleQwenEvent({ type: 'error', error: err.message })
                 mainWindow?.webContents.off('qwen-event', logHandler)
               })
           },
         })
         miniAppServer.start()
+
+        // ── Persistent event bridge: main app → mini app ──────────────────
+        // Forward ALL qwen-events and task-status-events to the mini app so
+        // orchestrator runs, spec tasks, and Telegram-triggered jobs all show
+        // up in the mini app regardless of how they were started.
+        // The onRunJob logHandler above handles per-job state tracking;
+        // this listener handles everything else (orchestrator, main chat, etc.)
+        const miniAppQwenListener = (_, data) => {
+          if (miniAppServer) miniAppServer._handleQwenEvent(data)
+        }
+        const miniAppTaskListener = (_, evt) => {
+          if (!miniAppServer) return
+          // Translate task-status-event into a mini app log entry + broadcast
+          const statusEmoji = { in_progress: '⚙️', completed: '✅', failed: '❌', skipped: '⏭', not_started: '⏸' }
+          const emoji = statusEmoji[evt.status] || '•'
+          const text = `${emoji} Task ${evt.nodeId}: ${evt.status}${evt.error ? ` — ${evt.error}` : ''}`
+          miniAppServer._handleQwenEvent({ type: 'text', text })
+          // Also broadcast a structured task-status message for richer UIs
+          miniAppServer._broadcast({ type: 'task_status', nodeId: evt.nodeId, status: evt.status, error: evt.error || null, time: Date.now() })
+        }
+        mainWindow.webContents.on('qwen-event', miniAppQwenListener)
+        mainWindow.webContents.on('task-status-event', miniAppTaskListener)
       }
 
       // Start cloudflared quick tunnel for public HTTPS access.

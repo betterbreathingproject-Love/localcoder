@@ -312,6 +312,10 @@ class InputRequester {
 const SERVER_PORT = 8090
 const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`
 
+// ── OpenRouter constants ──────────────────────────────────────────────────────
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+const OPENROUTER_CHAT_URL = `${OPENROUTER_BASE_URL}/chat/completions`
+
 /**
  * POST /admin/abort — signal the server to stop the current inference and
  * wait until the inference semaphore is free (Metal cleanup done).
@@ -2254,12 +2258,20 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
 
 // ── SSE stream parser ─────────────────────────────────────────────────────────
 
-function streamSSE(url, body) {
+function streamSSE(url, body, extraHeaders) {
   return new Promise((resolve, reject) => {
     const bodyStr = JSON.stringify(body)
-    const req = http.request(url, {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(bodyStr),
+      ...extraHeaders,
+    }
+    // Use https for external URLs (e.g. OpenRouter), http for local server
+    const isHttps = url.startsWith('https://')
+    const transport = isHttps ? require('https') : http
+    const req = transport.request(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) },
+      headers,
     }, (res) => {
       resolve({ res, req })
     })
@@ -5726,7 +5738,34 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       try {
-        const { res, req } = await streamSSE(`${SERVER_URL}/v1/chat/completions`, body)
+        // ── OpenRouter routing ────────────────────────────────────────────
+        // When the user has configured OpenRouter as the provider (via app
+        // settings), route the completion request to OpenRouter instead of
+        // the local MLX server. The body is OpenAI-compatible so no other
+        // changes are needed.
+        let completionUrl = `${SERVER_URL}/v1/chat/completions`
+        let extraHeaders = {}
+        try {
+          const { getAppSettings } = require('./projects')
+          const appSettings = getAppSettings()
+          if (appSettings.provider === 'openrouter' && appSettings.openrouterApiKey) {
+            completionUrl = OPENROUTER_CHAT_URL
+            extraHeaders = {
+              'Authorization': `Bearer ${appSettings.openrouterApiKey}`,
+              'HTTP-Referer': 'https://github.com/qwencoder-mac-studio',
+              'X-Title': 'QwenCoder Mac Studio',
+            }
+            // Use the configured OpenRouter model if set, otherwise keep body.model
+            if (appSettings.openrouterModel) {
+              body.model = appSettings.openrouterModel
+            }
+            // OpenRouter doesn't support repetition_penalty — remove it
+            delete body.repetition_penalty
+            this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[OpenRouter] routing to ${body.model}` })
+          }
+        } catch (_) { /* projects not available — use local server */ }
+
+        const { res, req } = await streamSSE(completionUrl, body, extraHeaders)
         this._activeReq = req
         this._sseErrorPending = false
 
