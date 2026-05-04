@@ -2,18 +2,21 @@
 /**
  * Terminal UI — two-pane panel:
  *   • Agent pane  — live stream of agent activity (tool calls, bash output, thinking)
- *   • Shell pane  — multiple PTY sessions, VS Code-style tab strip
+ *   • Shell pane  — multiple PTY sessions backed by xterm.js for proper VT100 emulation
  *
  * Loaded by renderer/index.html as a <script> tag.
  * All functions are global (vanilla JS, no framework).
  */
 
+// ── xterm.js imports (loaded from node_modules via require) ───────────────────
+const { Terminal: XTerminal } = require('@xterm/xterm')
+const { FitAddon } = require('@xterm/addon-fit')
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let _termCollapsed  = false
 let _termActivePane = 'agent'     // 'agent' | 'shell'
-const _TERM_MAX_BUFFER = 128 * 1024
 
-// Shell sessions: Map<id, { id, buffer, tabEl, screenEl, title }>
+// Shell sessions: Map<id, { id, xterm, fitAddon, tabEl, containerEl, title }>
 const _shellSessions = new Map()
 let _activeShellId   = null       // currently visible shell session ID
 let _shellNextNum    = 1          // counter for "Shell 1", "Shell 2", …
@@ -37,6 +40,20 @@ function _shellEmpty()     { return document.getElementById('terminalEmpty') }
 function _tabAgent()       { return document.getElementById('termTabAgent') }
 function _tabShell()       { return document.getElementById('termTabShell') }
 
+// ── xterm.js theme (matches the dark UI) ──────────────────────────────────────
+const _XTERM_THEME = {
+  background:       '#0c0c10',
+  foreground:       '#d4d4d4',
+  cursor:           '#7c6af7',
+  cursorAccent:     '#0c0c10',
+  selectionBackground: 'rgba(124,106,247,0.3)',
+  black:   '#555555', red:     '#f44747', green:   '#6a9955', yellow:  '#dcdcaa',
+  blue:    '#569cd6', magenta: '#c586c0', cyan:    '#4ec9b0', white:   '#d4d4d4',
+  brightBlack: '#888888', brightRed: '#f44747', brightGreen: '#6a9955',
+  brightYellow: '#dcdcaa', brightBlue: '#569cd6', brightMagenta: '#c586c0',
+  brightCyan: '#4ec9b0', brightWhite: '#ffffff',
+}
+
 // ── Top-level pane switching (Agent ↔ Shell) ──────────────────────────────────
 
 function terminalSwitchTab(pane) {
@@ -56,15 +73,22 @@ function terminalSwitchTab(pane) {
     if (shellPane) shellPane.style.display = ''
     if (tabAgent)  tabAgent.classList.remove('active')
     if (tabShell)  { tabShell.classList.add('active'); tabShell.classList.remove('has-activity') }
-    if (_activeShellId) _focusShell(_activeShellId)
+    // Fit + focus the active shell after the pane becomes visible
+    if (_activeShellId) {
+      requestAnimationFrame(() => {
+        _fitShell(_activeShellId)
+        _focusShell(_activeShellId)
+      })
+    }
   }
 }
 
 // ── Shell session management ──────────────────────────────────────────────────
 
-/** Create a new PTY session and add a tab for it. */
+/** Create a new PTY session backed by xterm.js. */
 async function terminalNew() {
-  const cwd = window._currentProjectDir || undefined
+  // Use the renderer's currentProject global (set in app.js)
+  const cwd = (typeof currentProject !== 'undefined' && currentProject) ? currentProject : undefined
   let result
   try {
     result = await window.app.terminalCreate({ cwd })
@@ -81,30 +105,7 @@ async function terminalNew() {
   const num   = _shellNextNum++
   const title = `Shell ${num}`
 
-  // Create the screen element
-  const screenEl = document.createElement('div')
-  screenEl.className = 'terminal-screen'
-  screenEl.tabIndex = 0
-  screenEl.dataset.sessionId = id
-  screenEl.addEventListener('keydown', _termHandleKeydown)
-  screenEl.addEventListener('paste',   _termHandlePaste)
-
-  const screens = _shellScreens()
-  if (screens) screens.appendChild(screenEl)
-
-  // Create the tab button
-  const tabEl = document.createElement('button')
-  tabEl.className = 'shell-session-tab'
-  tabEl.dataset.sessionId = id
-  tabEl.innerHTML = `<span class="sst-title">${_escapeHtml(title)}</span><span class="sst-close" title="Close">✕</span>`
-  tabEl.querySelector('.sst-title').addEventListener('click', () => _activateShell(id))
-  tabEl.querySelector('.sst-close').addEventListener('click', (e) => { e.stopPropagation(); _closeShell(id) })
-
-  const strip = _shellTabStrip()
-  if (strip) strip.appendChild(tabEl)
-
-  // Register session
-  _shellSessions.set(id, { id, buffer: '', tabEl, screenEl, title })
+  _createShellSession(id, title)
 
   // Switch to shell pane and activate this session
   terminalSwitchTab('shell')
@@ -112,33 +113,100 @@ async function terminalNew() {
   if (_termCollapsed) terminalToggle()
 }
 
+/** Internal: create xterm instance, container, and tab for a session. */
+function _createShellSession(id, title) {
+  // Container div for the xterm instance
+  const containerEl = document.createElement('div')
+  containerEl.className = 'xterm-container'
+  containerEl.dataset.sessionId = id
+  containerEl.style.display = 'none'
+
+  const screens = _shellScreens()
+  if (screens) screens.appendChild(containerEl)
+
+  // Create xterm.js terminal
+  const xterm = new XTerminal({
+    theme: _XTERM_THEME,
+    fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
+    fontSize: 12,
+    lineHeight: 1.35,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    scrollback: 5000,
+    allowProposedApi: true,
+  })
+
+  const fitAddon = new FitAddon()
+  xterm.loadAddon(fitAddon)
+  xterm.open(containerEl)
+
+  // Forward keystrokes to the PTY
+  xterm.onData((data) => {
+    window.app.terminalWrite(id, data)
+  })
+
+  // Send resize events to the PTY when xterm resizes
+  xterm.onResize(({ cols, rows }) => {
+    window.app.terminalResize(id, cols, rows)
+  })
+
+  // Create the tab button
+  const tabEl = document.createElement('button')
+  tabEl.className = 'shell-session-tab'
+  tabEl.dataset.sessionId = id
+  tabEl.innerHTML = `<span class="sst-title">${_escapeHtml(title)}</span>` +
+    `<span class="sst-close" title="Close">✕</span>`
+  tabEl.querySelector('.sst-title').addEventListener('click', () => _activateShell(id))
+  tabEl.querySelector('.sst-close').addEventListener('click', (e) => {
+    e.stopPropagation()
+    _closeShell(id)
+  })
+
+  const strip = _shellTabStrip()
+  if (strip) strip.appendChild(tabEl)
+
+  // Register session
+  _shellSessions.set(id, { id, xterm, fitAddon, tabEl, containerEl, title })
+}
+
+/** Fit the xterm instance to its container. */
+function _fitShell(id) {
+  const session = _shellSessions.get(id)
+  if (!session) return
+  try { session.fitAddon.fit() } catch (_) {}
+}
+
 /** Activate (focus) a shell session by ID. */
 function _activateShell(id) {
   const session = _shellSessions.get(id)
   if (!session) return
 
-  // Deactivate all tabs and screens
+  // Deactivate all tabs and containers
   for (const [, s] of _shellSessions) {
     s.tabEl.classList.remove('active')
-    s.screenEl.style.display = 'none'
+    s.containerEl.style.display = 'none'
   }
 
   // Activate this one
   session.tabEl.classList.add('active')
-  session.screenEl.style.display = ''
+  session.containerEl.style.display = ''
   _activeShellId = id
 
   // Hide empty state
   const empty = _shellEmpty()
   if (empty) empty.style.display = 'none'
 
-  _focusShell(id)
+  // Fit after display change, then focus
+  requestAnimationFrame(() => {
+    _fitShell(id)
+    _focusShell(id)
+  })
 }
 
-/** Focus the screen element of a shell session. */
+/** Focus the xterm instance of a shell session. */
 function _focusShell(id) {
   const session = _shellSessions.get(id)
-  if (session) session.screenEl.focus()
+  if (session) session.xterm.focus()
 }
 
 /** Close a shell session. */
@@ -148,9 +216,10 @@ async function _closeShell(id) {
 
   try { await window.app.terminalClose(id) } catch (_) {}
 
-  // Remove tab and screen from DOM
+  // Dispose xterm and remove DOM elements
+  session.xterm.dispose()
   session.tabEl.remove()
-  session.screenEl.remove()
+  session.containerEl.remove()
   _shellSessions.delete(id)
 
   // If this was the active session, activate another or show empty
@@ -166,7 +235,7 @@ async function _closeShell(id) {
   }
 }
 
-/** Close the currently active shell session (called by ✕ button in header). */
+/** Close the currently active shell session. */
 async function terminalCloseActive() {
   if (_activeShellId) await _closeShell(_activeShellId)
 }
@@ -179,113 +248,10 @@ function terminalToggle() {
   panel.classList.toggle('collapsed', _termCollapsed)
   const btn = document.getElementById('termToggleBtn')
   if (btn) btn.textContent = _termCollapsed ? '▲' : '▼'
-}
-
-// ── Shell rendering ───────────────────────────────────────────────────────────
-
-function _renderShell(id) {
-  const session = _shellSessions.get(id)
-  if (!session) return
-  session.screenEl.innerHTML = _ansiToHtml(session.buffer)
-  session.screenEl.scrollTop = session.screenEl.scrollHeight
-}
-
-/**
- * Minimal ANSI → HTML converter.
- * Handles SGR color codes (30-37, 90-97 foreground) and bold/dim.
- * Strips cursor movement, erase, and other control sequences.
- */
-function _ansiToHtml(text) {
-  let cleaned = text.replace(/\x1b\[[0-9;]*[A-HJKSTfhlm]/g, (m) => m.endsWith('m') ? m : '')
-  cleaned = cleaned.replace(/\x1b\][^\x07]*\x07/g, '')
-  cleaned = cleaned.replace(/\x1b\][^\x1b]*\x1b\\/g, '')
-  cleaned = cleaned.replace(/\x1b[^[]/g, '')
-
-  const FG_MAP = {
-    '30':'term-fg-black',  '31':'term-fg-red',     '32':'term-fg-green',
-    '33':'term-fg-yellow', '34':'term-fg-blue',    '35':'term-fg-magenta',
-    '36':'term-fg-cyan',   '37':'term-fg-white',
-    '90':'term-fg-black',  '91':'term-fg-red',     '92':'term-fg-green',
-    '93':'term-fg-yellow', '94':'term-fg-blue',    '95':'term-fg-magenta',
-    '96':'term-fg-cyan',   '97':'term-fg-white',
+  // Re-fit active terminal after expand
+  if (!_termCollapsed && _activeShellId && _termActivePane === 'shell') {
+    requestAnimationFrame(() => _fitShell(_activeShellId))
   }
-
-  let result = '', openSpans = 0
-  const parts = cleaned.split(/\x1b\[/)
-
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]
-    if (i === 0) { result += _escapeHtml(part); continue }
-
-    const m = part.match(/^([0-9;]*)m(.*)$/s)
-    if (!m) { result += _escapeHtml(part); continue }
-
-    const codes = m[1].split(';').filter(Boolean)
-    const txt   = m[2]
-
-    if (codes.includes('0') || codes.length === 0) {
-      while (openSpans > 0) { result += '</span>'; openSpans-- }
-    }
-
-    const classes = []
-    for (const code of codes) {
-      if (code === '0') continue
-      if (code === '1') classes.push('term-bold')
-      if (code === '2') classes.push('term-dim')
-      if (FG_MAP[code]) classes.push(FG_MAP[code])
-    }
-    if (classes.length > 0) { result += `<span class="${classes.join(' ')}">`;  openSpans++ }
-    result += _escapeHtml(txt)
-  }
-
-  while (openSpans > 0) { result += '</span>'; openSpans-- }
-  return result
-}
-
-function _escapeHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-}
-
-// ── Keyboard / paste input ────────────────────────────────────────────────────
-
-function _termHandleKeydown(e) {
-  const id = e.currentTarget.dataset.sessionId
-  if (!id || !_shellSessions.has(id)) return
-  e.preventDefault()
-  e.stopPropagation()
-
-  let data = ''
-  if (e.key === 'Enter')           data = '\r'
-  else if (e.key === 'Backspace')  data = '\x7f'
-  else if (e.key === 'Tab')        data = '\t'
-  else if (e.key === 'Escape')     data = '\x1b'
-  else if (e.key === 'ArrowUp')    data = '\x1b[A'
-  else if (e.key === 'ArrowDown')  data = '\x1b[B'
-  else if (e.key === 'ArrowRight') data = '\x1b[C'
-  else if (e.key === 'ArrowLeft')  data = '\x1b[D'
-  else if (e.key === 'Home')       data = '\x1b[H'
-  else if (e.key === 'End')        data = '\x1b[F'
-  else if (e.key === 'Delete')     data = '\x1b[3~'
-  else if (e.ctrlKey && e.key === 'c') data = '\x03'
-  else if (e.ctrlKey && e.key === 'd') data = '\x04'
-  else if (e.ctrlKey && e.key === 'z') data = '\x1a'
-  else if (e.ctrlKey && e.key === 'l') data = '\x0c'
-  else if (e.ctrlKey && e.key === 'a') data = '\x01'
-  else if (e.ctrlKey && e.key === 'e') data = '\x05'
-  else if (e.ctrlKey && e.key === 'k') data = '\x0b'
-  else if (e.ctrlKey && e.key === 'u') data = '\x15'
-  else if (e.ctrlKey && e.key === 'w') data = '\x17'
-  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) data = e.key
-
-  if (data) window.app.terminalWrite(id, data)
-}
-
-function _termHandlePaste(e) {
-  const id = e.currentTarget.dataset.sessionId
-  if (!id || !_shellSessions.has(id)) return
-  e.preventDefault()
-  const text = (e.clipboardData || window.clipboardData).getData('text')
-  if (text) window.app.terminalWrite(id, text)
 }
 
 // ── Resize drag ───────────────────────────────────────────────────────────────
@@ -311,18 +277,37 @@ function _initTerminalResize() {
     const panel = _termPanel()
     if (!panel) return
     const delta = startY - e.clientY
-    const newH = Math.max(80, Math.min(window.innerHeight * 0.6, startHeight + delta))
+    const newH = Math.max(80, Math.min(window.innerHeight * 0.8, startHeight + delta))
     panel.style.height = newH + 'px'
+    // Re-fit active xterm on drag
+    if (_activeShellId && _termActivePane === 'shell') _fitShell(_activeShellId)
   }
 
   function onDragEnd() {
     handle.classList.remove('dragging')
     document.removeEventListener('mousemove', onDrag)
     document.removeEventListener('mouseup', onDragEnd)
+    // Final fit after drag ends
+    if (_activeShellId && _termActivePane === 'shell') _fitShell(_activeShellId)
   }
 }
 
+// ── Window resize handler ─────────────────────────────────────────────────────
+let _resizeTimer = null
+function _onWindowResize() {
+  clearTimeout(_resizeTimer)
+  _resizeTimer = setTimeout(() => {
+    if (_activeShellId && _termActivePane === 'shell' && !_termCollapsed) {
+      _fitShell(_activeShellId)
+    }
+  }, 100)
+}
+
 // ── Agent log helpers ─────────────────────────────────────────────────────────
+
+function _escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+}
 
 function terminalClearAgent() {
   _agentLastBashRow = null
@@ -513,21 +498,15 @@ function terminalHandleAgentEvent(ev) {
 // ── IPC event listeners ───────────────────────────────────────────────────────
 
 function _initTerminalEvents() {
-  // PTY output — route to the right session's buffer and screen
+  // PTY output — route to the right session's xterm instance
   window.app.onTerminalOutput((msg) => {
     const session = _shellSessions.get(msg.id)
     if (!session) return
-    session.buffer += msg.data
-    if (session.buffer.length > _TERM_MAX_BUFFER) {
-      session.buffer = session.buffer.slice(-_TERM_MAX_BUFFER)
-    }
-    // Only re-render if this session is currently visible
-    if (msg.id === _activeShellId) _renderShell(msg.id)
-    // Dot on shell tab when not active
+    session.xterm.write(msg.data)
+    // Activity dot on shell tab when not active
     if (_termActivePane !== 'shell' || msg.id !== _activeShellId) {
       const tab = _tabShell()
       if (tab) tab.classList.add('has-activity')
-      // Also dot on the session tab itself if it's not the active shell
       if (msg.id !== _activeShellId && session.tabEl) {
         session.tabEl.classList.add('has-output')
       }
@@ -538,9 +517,7 @@ function _initTerminalEvents() {
   window.app.onTerminalExit((msg) => {
     const session = _shellSessions.get(msg.id)
     if (!session) return
-    session.buffer += `\r\n[Process exited with code ${msg.exitCode}]\r\n`
-    if (msg.id === _activeShellId) _renderShell(msg.id)
-    // Mark tab as dead
+    session.xterm.write(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`)
     if (session.tabEl) session.tabEl.classList.add('dead')
   })
 
@@ -549,26 +526,8 @@ function _initTerminalEvents() {
     // If this session isn't tracked yet, adopt it
     if (!_shellSessions.has(msg.id)) {
       const num   = _shellNextNum++
-      const title = `Shell ${num}`
-      const screenEl = document.createElement('div')
-      screenEl.className = 'terminal-screen'
-      screenEl.tabIndex = 0
-      screenEl.dataset.sessionId = msg.id
-      screenEl.addEventListener('keydown', _termHandleKeydown)
-      screenEl.addEventListener('paste',   _termHandlePaste)
-      const screens = _shellScreens()
-      if (screens) screens.appendChild(screenEl)
-
-      const tabEl = document.createElement('button')
-      tabEl.className = 'shell-session-tab'
-      tabEl.dataset.sessionId = msg.id
-      tabEl.innerHTML = `<span class="sst-title">${_escapeHtml(title)}</span><span class="sst-close" title="Close">✕</span>`
-      tabEl.querySelector('.sst-title').addEventListener('click', () => _activateShell(msg.id))
-      tabEl.querySelector('.sst-close').addEventListener('click', (e) => { e.stopPropagation(); _closeShell(msg.id) })
-      const strip = _shellTabStrip()
-      if (strip) strip.appendChild(tabEl)
-
-      _shellSessions.set(msg.id, { id: msg.id, buffer: '', tabEl, screenEl, title })
+      const title = msg.command ? `⚡ ${msg.command.slice(0,20)}` : `Shell ${num}`
+      _createShellSession(msg.id, title)
     }
 
     if (_termCollapsed) terminalToggle()
@@ -588,8 +547,6 @@ function _initTerminalEvents() {
       setTimeout(() => panel.classList.remove('focused'), 3000)
     }
   })
-
-  // Agent events forwarded from app.js onQwenEvent handlers
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -598,6 +555,7 @@ function _initTerminal() {
   _initTerminalResize()
   _initTerminalEvents()
   terminalSwitchTab('agent')
+  window.addEventListener('resize', _onWindowResize)
 }
 
 if (document.readyState === 'loading') {

@@ -248,13 +248,6 @@ class WindowInputRequester {
     return new Promise((resolve) => {
       this._resolve = resolve
       this._sink.send('qwen-event', { type: 'ask-user', question, options })
-      // 10-minute timeout — agent continues with a fallback message
-      this._timeout = setTimeout(() => {
-        this._pending = false
-        this._resolve = null
-        console.log('[WindowInputRequester] timed out')
-        resolve('(No response received — continuing)')
-      }, 10 * 60 * 1000)
     })
   }
 
@@ -265,7 +258,6 @@ class WindowInputRequester {
       return
     }
     console.log('[WindowInputRequester] resolving with:', reply?.slice(0, 80))
-    clearTimeout(this._timeout)
     this._pending = false
     const fn = this._resolve
     this._resolve = null
@@ -1469,61 +1461,18 @@ function detectContentType(toolName, content) {
 
 // ── Route interactive commands to the terminal panel ──────────────────────────
 // Used when bash tool detects a command that needs user input (sudo, ssh, etc.)
-let _ptyModule = null
-try { _ptyModule = require('node-pty') } catch { /* node-pty not available */ }
-
-async function _routeToInteractiveTerminal(command, cwd, notify) {
-  if (!_ptyModule) return null
-  // Use the ipc-terminal module's handler via a direct approach:
-  // Send a terminal-focus event to the renderer and create a PTY session
+// Routes through the renderer → ipc-terminal 'terminal-run-interactive' handler
+// so sessions are properly tracked and manageable from the UI.
+async function _routeToInteractiveTerminal(command, cwd, _notify) {
   try {
     const { BrowserWindow } = require('electron')
-    const wins = BrowserWindow.getAllWindows()
-    const mainWin = wins.find(w => !w.isDestroyed())
+    const mainWin = BrowserWindow.getAllWindows().find(w => !w.isDestroyed())
     if (!mainWin) return null
 
-    // Create a PTY session for this command
-    const os = require('os')
-    const termCwd = cwd || os.homedir()
-    const shell = process.env.SHELL || '/bin/zsh'
-    const env = { ...process.env }
-    const extra = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin']
-    const current = env.PATH || ''
-    const missing = extra.filter(d => !current.includes(d))
-    if (missing.length > 0) env.PATH = missing.join(':') + ':' + current
-
-    const proc = _ptyModule.spawn(shell, [], {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 24,
-      cwd: termCwd,
-      env,
-    })
-
-    const id = 'term-interactive-' + Date.now()
-
-    proc.onData((data) => {
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('terminal-output', { id, data })
-      }
-    })
-
-    proc.onExit(({ exitCode, signal }) => {
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('terminal-exit', { id, exitCode, signal })
-      }
-    })
-
-    // Send the command
-    proc.write(command + '\n')
-
-    // Notify renderer to show the terminal
-    mainWin.webContents.send('terminal-focus', { id, command })
-
-    return {
-      id,
-      message: `Command sent to interactive terminal (${id}). The user can see the terminal panel at the bottom of the Preview tab and provide any required input (passwords, confirmations, etc.).`,
-    }
+    const result = await mainWin.webContents.executeJavaScript(
+      `window.app.terminalRunInteractive(${JSON.stringify(command)}, ${JSON.stringify(cwd || null)})`
+    )
+    return result
   } catch (err) {
     console.warn('[direct-bridge] terminal routing failed:', err.message)
     return null

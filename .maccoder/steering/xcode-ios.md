@@ -2,6 +2,7 @@
 name: Xcode & iOS Simulator
 description: Guidance for building and running iOS projects in the simulator
 auto_generated: false
+when_files: *.xcodeproj, *.xcworkspace, Package.swift
 ---
 
 # Xcode & iOS Simulator Guidance
