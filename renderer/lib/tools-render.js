@@ -241,22 +241,30 @@ function renderToolResult(content, isError=false) {
   }
 
   const escaped = esc(displayText)
+  // For task_complete summaries, unescape \n to actual newlines and render as markdown
+  const isTaskComplete = displayText.startsWith('__TASK_COMPLETE__') || displayText.includes('## ') || displayText.includes('### ')
+  let renderedContent = escaped
+  if (isTaskComplete || displayText.includes('\\n')) {
+    // Unescape JSON-escaped newlines and render as simple HTML
+    const unescaped = displayText.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"')
+    renderedContent = esc(unescaped).replace(/\n/g, '<br>')
+  }
   const limit = 8000
   const cls = isError ? 'tool-result error' : 'tool-result'
   const icon = isError ? '✗' : '✓'
   const label = isError ? 'Error' : 'Output'
-  if (escaped.length > limit) {
+  if (renderedContent.length > limit) {
     const id = 'tr-' + Date.now() + Math.random().toString(36).slice(2,6)
     return `<div class="${cls}" id="${id}">
       <div class="tool-result-header"><span class="tool-result-icon ${isError?'error':''}">${icon}</span> ${label}</div>
       ${imgHtml}${videoHtml}
-      <div class="tool-result-body">${escaped.slice(0, limit)}<span class="tool-result-more" onclick="this.parentElement.innerHTML=window._toolResultFull['${id}'];delete window._toolResultFull['${id}']">… show all (${displayText.length} chars)</span></div>
+      <div class="tool-result-body">${renderedContent.slice(0, limit)}<span class="tool-result-more" onclick="this.parentElement.innerHTML=window._toolResultFull['${id}'];delete window._toolResultFull['${id}']">… show all (${displayText.length} chars)</span></div>
     </div>`
-      + `<script>if(!window._toolResultFull)window._toolResultFull={};window._toolResultFull['${id}']=\`${escaped.replace(/`/g,'\\`').replace(/<\/script/gi,'<\\/script')}\`</script>`
+      + `<script>if(!window._toolResultFull)window._toolResultFull={};window._toolResultFull['${id}']=\`${renderedContent.replace(/`/g,'\\`').replace(/<\/script/gi,'<\\/script')}\`</script>`
   }
   return `<div class="${cls}">
     <div class="tool-result-header"><span class="tool-result-icon ${isError?'error':''}">${icon}</span> ${label}</div>
     ${imgHtml}${videoHtml}
-    <div class="tool-result-body">${escaped}</div>
+    <div class="tool-result-body">${renderedContent}</div>
   </div>`
 }
