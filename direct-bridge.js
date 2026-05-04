@@ -2966,13 +2966,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       // Gather active diagnostics and inject into context so the agent
-      // is aware of existing errors before it starts working
+      // is aware of existing errors before it starts working.
+      // Wrapped in a 5s timeout — LSP scans on large Swift projects can hang.
       if (!_isOrchestratorTask && this._lspManager?.getStatus().status === 'ready') {
         console.log('[direct-bridge] run() LSP diagnostics starting, elapsed %dms', Date.now() - _runT0);
         try {
-          // For Swift/Xcode projects, scan .swift files directly — detectEntryPoints
-          // returns JS/Python files which sourcekit-lsp doesn't handle.
-          // For other projects, use the standard entry point detection.
           let diagFiles = detectEntryPoints(workDir)
           const hasXcodeProject = (() => {
             try {
@@ -2980,22 +2978,23 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             } catch { return false }
           })()
           if (hasXcodeProject) {
-            // Collect up to 20 Swift files from the project, prioritising entry points
-            // (App.swift, ContentView.swift, main.swift) then other files
             try {
               const { execSync } = require('child_process')
               const swiftFiles = execSync(
-                `find "${workDir}" -name "*.swift" -not -path "*/DerivedData/*" -not -path "*/.build/*" 2>/dev/null | head -40`,
-                { timeout: 5000, encoding: 'utf-8' }
+                `find "${workDir}" -name "*.swift" -not -path "*/DerivedData/*" -not -path "*/.build/*" 2>/dev/null | head -20`,
+                { timeout: 3000, encoding: 'utf-8' }
               ).trim().split('\n').filter(Boolean)
-              // Prioritise entry-point-like files
               const priority = swiftFiles.filter(f => /App\.swift$|ContentView\.swift$|main\.swift$/i.test(f))
               const rest = swiftFiles.filter(f => !priority.includes(f))
-              diagFiles = [...priority, ...rest].slice(0, 20)
+              diagFiles = [...priority, ...rest].slice(0, 8)  // cap at 8 files to keep it fast
             } catch { /* fall back to default */ }
           }
 
-          const diagSummary = await this._lspManager.getProjectDiagnosticsSummary(diagFiles)
+          // 5s wall-clock timeout — don't let LSP block the agent start
+          const diagSummary = await Promise.race([
+            this._lspManager.getProjectDiagnosticsSummary(diagFiles),
+            new Promise(r => setTimeout(() => r({ totalErrors: 0, files: [] }), 5000)),
+          ])
           if (diagSummary.totalErrors > 0) {
             const diagLines = []
             for (const f of diagSummary.files) {
