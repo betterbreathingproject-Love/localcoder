@@ -22,6 +22,15 @@ const { getApiKeys } = require('./projects')
 const compactor = require('./compactor')
 const config = require('./config')
 
+// ── Shared event bus for cross-module event observation ──────────────────────
+// WindowSink sends events to the renderer via IPC, but other main-process
+// modules (Telegram bot, mini app server) also need to observe these events.
+// Electron's webContents.on() does NOT intercept webContents.send() calls,
+// so we use a shared EventEmitter as a local event bus.
+const { EventEmitter } = require('node:events')
+const sinkBus = new EventEmitter()
+sinkBus.setMaxListeners(20) // multiple listeners: telegram, miniapp, orchestrator
+
 // Xcode MCP tools — gracefully degrades if xcodebuildmcp is not installed
 let xcodeTool = null
 try {
@@ -184,6 +193,8 @@ class WindowSink {
     if (this.win && !this.win.isDestroyed()) {
       this.win.webContents.send(channel, data)
     }
+    // Also emit on the shared bus so main-process observers (Telegram, mini app) can see events
+    sinkBus.emit(channel, data)
   }
 }
 
@@ -6305,4 +6316,4 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
   }
 }
 
-module.exports = { DirectBridge, WindowSink, CallbackSink, WorkerSink, InputRequester, WindowInputRequester, executeTool, getToolDefs, LSP_TOOL_SETS, LSP_TOOL_DEFS, buildProjectContext, detectEntryPoints, formatSymbolOutline, detectContentType, undoList, undoApply, undoClear, undoRecord }
+module.exports = { DirectBridge, WindowSink, CallbackSink, WorkerSink, InputRequester, WindowInputRequester, executeTool, getToolDefs, LSP_TOOL_SETS, LSP_TOOL_DEFS, buildProjectContext, detectEntryPoints, formatSymbolOutline, detectContentType, undoList, undoApply, undoClear, undoRecord, sinkBus }

@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron')
 const path = require('path')
 const os = require('os')
 const fs = require('node:fs')
-const { DirectBridge, WindowSink, WindowInputRequester } = require('./direct-bridge')
+const { DirectBridge, WindowSink, WindowInputRequester, sinkBus } = require('./direct-bridge')
 const { AgentPool, CATEGORY_KEYWORDS } = require('./agent-pool')
 const { loadSteeringDocs, formatSteeringForPrompt } = require('./steering-loader')
 
@@ -500,10 +500,10 @@ ipcMain.handle('qwen-run', async (_, { prompt, cwd, permissionMode, agentRole, m
   // calls, allowing the fast model to run during tool execution gaps.
   // Fallback: also listen for session-end to ensure cleanup.
   _serverQueue._agentRunning = true
-  const _releaseOnEnd = (_, data) => {
+  const _releaseOnEnd = (data) => {
     if (data && (data.type === 'session-end' || data.type === 'error' || data.type === 'result')) {
       _serverQueue._agentRunning = false
-      mainWindow?.webContents.off('qwen-event', _releaseOnEnd)
+      sinkBus.off('qwen-event', _releaseOnEnd)
       // Drain any queued requests now that the agent is done
       if (_serverQueue._waiters && _serverQueue._waiters.length > 0) {
         const next = _serverQueue._waiters.shift()
@@ -511,7 +511,7 @@ ipcMain.handle('qwen-run', async (_, { prompt, cwd, permissionMode, agentRole, m
       }
     }
   }
-  mainWindow?.webContents.on('qwen-event', _releaseOnEnd)
+  sinkBus.on('qwen-event', _releaseOnEnd)
   return { ok: true }
 })
 ipcMain.handle('qwen-interrupt', async () => { await qwenBridge?.interrupt(); return { ok: true } })
@@ -856,7 +856,7 @@ function createWindow() {
   // ── Mirror agent results to Telegram when connected ──
   // This ensures that any agent run (from main chat, mini app, or telegram)
   // sends final results to the paired Telegram chat if the bot is connected.
-  mainWindow.webContents.on('qwen-event', (_, data) => {
+  sinkBus.on('qwen-event', (data) => {
     if (!telegramBot || !telegramBot.getStatus().connected) return
     const chatId = telegramBot.getPairedChatId()
     if (!chatId) return
@@ -1013,22 +1013,20 @@ function createWindow() {
               // Continue anyway — _waitForServer in DirectBridge will retry
             }
 
-            // Hook into qwen events to update controller state for polling.
-            // The persistent miniAppQwenListener (set up after miniAppServer.start())
-            // already forwards all qwen-events to the mini app — we only need to
-            // track job state transitions here.
-            const logHandler = (_, data) => {
-              if (data.type === 'done' || data.type === 'finish') {
+            // Track job state transitions via sinkBus.
+            // The persistent miniAppQwenListener handles log forwarding.
+            const logHandler = (data) => {
+              if (data.type === 'done' || data.type === 'finish' || data.type === 'session-end') {
                 remoteJobController._state = 'completed'
-                mainWindow?.webContents.off('qwen-event', logHandler)
+                sinkBus.off('qwen-event', logHandler)
               } else if (data.type === 'error') {
                 remoteJobController._state = 'failed'
-                mainWindow?.webContents.off('qwen-event', logHandler)
+                sinkBus.off('qwen-event', logHandler)
               }
             }
 
-            // Listen to the events the bridge sends to the window
-            mainWindow?.webContents.on('qwen-event', logHandler)
+            // Listen to the events the bridge emits via sinkBus
+            sinkBus.on('qwen-event', logHandler)
 
             // Run using the shared bridge — shows in main app exactly like user typed it
             qwenBridge.run({ prompt, cwd, permissionMode: 'auto-edit' })
@@ -1036,11 +1034,11 @@ function createWindow() {
                 if (remoteJobController._state === 'running') {
                   remoteJobController._state = 'completed'
                 }
-                mainWindow?.webContents.off('qwen-event', logHandler)
+                sinkBus.off('qwen-event', logHandler)
               })
               .catch((err) => {
                 remoteJobController._state = 'failed'
-                mainWindow?.webContents.off('qwen-event', logHandler)
+                sinkBus.off('qwen-event', logHandler)
               })
           },
         })
@@ -1050,27 +1048,21 @@ function createWindow() {
         // Forward ALL qwen-events and task-status-events to the mini app so
         // orchestrator runs, spec tasks, and Telegram-triggered jobs all show
         // up in the mini app regardless of how they were started.
-        // The onRunJob logHandler above handles per-job state tracking;
-        // this listener handles everything else (orchestrator, main chat, etc.)
-        const miniAppQwenListener = (_, data) => {
+        // Uses sinkBus (shared EventEmitter in direct-bridge.js) because
+        // Electron's webContents.on() does NOT intercept webContents.send().
+        sinkBus.on('qwen-event', (data) => {
           if (miniAppServer) miniAppServer._handleQwenEvent(data)
-        }
-        const miniAppTaskListener = (_, evt) => {
+        })
+        sinkBus.on('task-status-event', (evt) => {
           if (!miniAppServer) return
-          // Translate task-status-event into a mini app log entry + broadcast
           const statusEmoji = { in_progress: '⚙️', completed: '✅', failed: '❌', skipped: '⏭', not_started: '⏸' }
           const emoji = statusEmoji[evt.status] || '•'
           const text = `${emoji} Task ${evt.nodeId}: ${evt.status}${evt.error ? ` — ${evt.error}` : ''}`
           miniAppServer._handleQwenEvent({ type: 'text', text })
-          // Also broadcast a structured task-status message for richer UIs
           miniAppServer._broadcast({ type: 'task_status', nodeId: evt.nodeId, status: evt.status, error: evt.error || null, time: Date.now() })
-        }
-        mainWindow.webContents.on('qwen-event', miniAppQwenListener)
-        mainWindow.webContents.on('task-status-event', miniAppTaskListener)
-        mainWindow.webContents.on('orchestrator-completed', () => {
-          if (miniAppServer) {
-            miniAppServer._handleQwenEvent({ type: 'done' })
-          }
+        })
+        sinkBus.on('orchestrator-completed', () => {
+          if (miniAppServer) miniAppServer._handleQwenEvent({ type: 'done' })
         })
       }
 

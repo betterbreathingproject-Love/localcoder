@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events')
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
+const { sinkBus } = require('./direct-bridge')
 
 class RemoteJobController extends EventEmitter {
   /**
@@ -88,7 +89,7 @@ class RemoteJobController extends EventEmitter {
     // Mirror qwen-event from the main window to Telegram
     // Note: final results are mirrored by the persistent listener in main.js,
     // so here we only forward intermediate status like tool activity.
-    this._telegramEventHandler = (_, data) => {
+    this._telegramEventHandler = (data) => {
       if (!this._bot || this._state !== 'running') return
       // Mirror error results to Telegram (persistent listener only mirrors success)
       if (data.type === 'result' && data.is_error) {
@@ -96,7 +97,7 @@ class RemoteJobController extends EventEmitter {
         this._bot.sendMessage(this._chatId, `⚠️ ${text}`).catch(() => {})
       }
     }
-    this._mainWindow?.webContents.on('qwen-event', this._telegramEventHandler)
+    sinkBus.on('qwen-event', this._telegramEventHandler)
 
     // Set up periodic status updates (Req 5.4 — ≥30s apart)
     this._statusInterval = setInterval(() => {
@@ -349,8 +350,8 @@ class RemoteJobController extends EventEmitter {
    * @private
    */
   _cleanupTelegramHandler() {
-    if (this._telegramEventHandler && this._mainWindow) {
-      this._mainWindow.webContents.off('qwen-event', this._telegramEventHandler)
+    if (this._telegramEventHandler) {
+      sinkBus.off('qwen-event', this._telegramEventHandler)
       this._telegramEventHandler = null
     }
   }

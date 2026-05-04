@@ -3,6 +3,7 @@
 const fsp = require('fs/promises')
 const { parseTaskGraph } = require('../task-graph')
 const { Orchestrator } = require('../orchestrator')
+const { sinkBus } = require('../direct-bridge')
 const compactor = require('../compactor')
 const { astSearch, getSupportedPatterns, getSearchStatus } = require('../ast-search')
 const { initSpec, getSpecPhase, advancePhase, getSpecArtifacts, listSpecs, deleteSpec } = require('../spec-workflow')
@@ -116,6 +117,7 @@ function register(ipcMain, { getMainWindow, getCurrentProject, getAgentPool, get
       })
       orchestratorInstance.on('task-status-event', (evt) => {
         getMainWindow()?.webContents.send('task-status-event', evt)
+        sinkBus.emit('task-status-event', evt)
       })
 
       // Forward agent streaming events (tool calls, tokens) to renderer.
@@ -143,6 +145,7 @@ function register(ipcMain, { getMainWindow, getCurrentProject, getAgentPool, get
           _agentEventHandler = null
         }
         getMainWindow()?.webContents.send('orchestrator-completed')
+        sinkBus.emit('orchestrator-completed')
       })
       orchestratorInstance.start().catch(err => {
         console.error('[orchestrator] Start error:', err)
