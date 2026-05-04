@@ -3525,6 +3525,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         if (this._aborted) return
         try {
           this._injectionInterrupt = false  // reset before each attempt
+          console.log('[direct-bridge] _agentLoop turn %d: calling _streamCompletion, messages=%d, ~%d tokens', turn, messages.length, estimateMessagesTokens(messages))
+          this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[bridge] calling inference (turn ${turn}, ${messages.length} msgs, ~${estimateMessagesTokens(messages)} tokens)` })
           completion = await this._streamCompletion(messages, cwd, model)
           break
         } catch (err) {
