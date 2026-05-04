@@ -999,6 +999,10 @@ async function switchProject(id) {
   }
   const p = await window.app.openProjectById(id)
   if (!p) return
+
+  // Abort any running agent/orchestrator before switching projects
+  await teardownActiveAgents()
+
   activeProjectId = p.id
   currentProject = sanitizePath(p.directory)
   document.getElementById('projectPath').textContent = p.directory
@@ -1050,15 +1054,8 @@ async function switchSession(id) {
   await saveChatSnapshot()
   await saveWorkflowState()
 
-  // Tear down any in-flight agent event listeners from the previous session.
-  // Without this, stale onQwenEvent handlers keep firing into the new session's
-  // DOM, causing the old status to flash/fight with the new session's UI.
-  window.app.offQwenEvents()
-  window.app.offOrchestratorEvents?.()
-  window.app.offOrchestratorCompleted()
-  if (isGenerating) {
-    finishGeneration()
-  }
+  // Abort any running agent/orchestrator and clean up listeners
+  await teardownActiveAgents()
 
   activeSessionId = id
   const sessions = await window.app.listSessions(activeProjectId)
@@ -1080,13 +1077,8 @@ async function newSession(sessionType) {
   await saveChatSnapshot()
   await saveWorkflowState()
 
-  // Tear down stale agent event listeners from the previous session
-  window.app.offQwenEvents()
-  window.app.offOrchestratorEvents?.()
-  window.app.offOrchestratorCompleted()
-  if (isGenerating) {
-    finishGeneration()
-  }
+  // Abort any running agent/orchestrator and clean up listeners
+  await teardownActiveAgents()
 
   const sessions = await window.app.listSessions(activeProjectId)
   const type = sessionType || 'vibe'
@@ -2857,6 +2849,30 @@ async function sendAgentMode(prompt, opts = {}) {
     samplingParams: getSamplingParams(),
     taskGraphPath: currentTasksPath || undefined,
   })
+}
+
+/**
+ * Abort any running orchestrator and/or vibe agent, reset UI state.
+ * Call this before switching sessions, projects, or starting a new run.
+ */
+async function teardownActiveAgents() {
+  window.app.offQwenEvents()
+  window.app.offOrchestratorEvents?.()
+  window.app.offOrchestratorCompleted()
+  if (_orchestratorRunning) {
+    await window.app.taskGraphAbort().catch(() => {})
+    _orchestratorRunning = false
+    document.getElementById('tgRunBtn').style.display = 'inline-block'
+    document.getElementById('tgPauseBtn').style.display = 'none'
+    document.getElementById('tgResumeBtn').style.display = 'none'
+    document.getElementById('tgAbortBtn').style.display = 'none'
+    document.getElementById('tgInjectBar').style.display = 'none'
+  }
+  if (isGenerating) {
+    await window.app.qwenInterrupt().catch(() => {})
+    finishGeneration()
+  }
+  document.getElementById('agentPrompt').placeholder = 'Ask anything... drop images here. ⌘↵ to send'
 }
 
 function finishGeneration() {
