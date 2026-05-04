@@ -3044,6 +3044,34 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     let _annotationNudgeCount = 0  // Track consecutive hallucinated-annotation nudges — cap to prevent infinite loop
     let _lastTodos = null  // Track the latest todo list for completion checking
     let _agentNotes = null  // Persistent thinking notes — survive compaction, re-injected after each compact
+
+    // ── Restore agent notes from conversation history (session resume) ────
+    // When resuming a session, scan the messages for the last agent_notes call
+    // and pre-populate _agentNotes so the model has its prior discoveries.
+    for (let mi = messages.length - 1; mi >= 0; mi--) {
+      const m = messages[mi]
+      if (m.role === 'assistant' && m.tool_calls) {
+        for (const tc of (m.tool_calls || [])) {
+          if (tc.function?.name === 'agent_notes') {
+            try {
+              const args = typeof tc.function.arguments === 'string'
+                ? JSON.parse(tc.function.arguments) : tc.function.arguments
+              if (args.notes && typeof args.notes === 'string') {
+                _agentNotes = args.notes.trim()
+              }
+            } catch {}
+          }
+        }
+        if (_agentNotes) break
+      }
+    }
+    // If notes were found, inject them into the initial context
+    if (_agentNotes) {
+      messages.push({
+        role: 'system',
+        content: `[Your thinking notes from the previous run — use these to avoid re-discovering things]:\n${_agentNotes}`,
+      })
+    }
     let _bootstrapDone = false  // Track whether todo bootstrap has fired
     let _textOnlyTurns = 0  // Track consecutive text-only responses for safety valve
     // ── Unproductive turn tracking ────────────────────────────────────────
