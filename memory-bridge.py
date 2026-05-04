@@ -1988,6 +1988,7 @@ _VALID_ASSIST_TASK_TYPES = frozenset({
     "route_task",
     "chat_reply",
     "progress_summary",
+    "gather_context",
 })
 
 # Legacy route_task support (kept for backward compatibility)
@@ -2893,6 +2894,50 @@ async def _handle_chat_reply(payload: dict) -> AssistResponse:
         return AssistResponse(result=None, elapsed_ms=elapsed_ms, output_tokens=0)
 
 
+async def _handle_gather_context(payload: dict) -> AssistResponse:
+    """Identify relevant files for a task using the fast model."""
+    import time
+    t0 = time.monotonic()
+
+    user_prompt = payload.get("user_prompt", "")[:500]
+    file_tree = payload.get("file_tree", "")[:3000]
+
+    if not user_prompt or not file_tree:
+        return AssistResponse(result_data=[], elapsed_ms=0, output_tokens=0)
+
+    prompt = (
+        "Given this project file tree and user request, list the 3-5 most relevant files "
+        "the agent should read first. Return ONLY a JSON array of objects with 'path' and 'reason' keys. "
+        "No explanation, just the JSON array.\n\n"
+        f"File tree:\n{file_tree}\n\n"
+        f"User request: {user_prompt}\n\n"
+        "JSON array:"
+    )
+
+    try:
+        import asyncio, json as _json
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: _extract_generate(prompt, max_tokens=200)
+        )
+        # Parse the JSON array from the response
+        raw = response.strip()
+        # Handle markdown code blocks
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        result = _json.loads(raw)
+        if not isinstance(result, list):
+            result = []
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.debug(f"[gather_context] {elapsed_ms}ms: {len(result)} files identified")
+        return AssistResponse(result_data=result, elapsed_ms=elapsed_ms, output_tokens=len(response.split()))
+    except Exception as e:
+        logger.warning(f"[_handle_gather_context] failed: {e}")
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return AssistResponse(result_data=[], elapsed_ms=elapsed_ms, output_tokens=0)
+
+
 async def _handle_progress_summary(payload: dict) -> AssistResponse:
     """Generate a brief progress summary from recent tool actions."""
     import time
@@ -2951,6 +2996,7 @@ _ASSIST_HANDLERS = {
     "route_task": _handle_route_task,
     "chat_reply": _handle_chat_reply,
     "progress_summary": _handle_progress_summary,
+    "gather_context": _handle_gather_context,
 }
 
 

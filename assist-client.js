@@ -252,6 +252,24 @@ async function assistDetectRepetition(recentResponses) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Gather relevant file context for a task using the fast model.
+ * Scans the file tree and identifies which files are most relevant to the
+ * user's request, returning paths and brief descriptions.
+ * @param {string} userPrompt - The user's request
+ * @param {string} fileTree - Compact file tree of the project
+ * @returns {Promise<Array<{path: string, reason: string}>|null>}
+ */
+async function assistGatherContext(userPrompt, fileTree) {
+  try {
+    const res = await _assistRequest('gather_context', {
+      user_prompt: userPrompt,
+      file_tree: fileTree,
+    }, 12000)
+    return (res && Array.isArray(res.result_data)) ? res.result_data : null
+  } catch (_) { return null }
+}
+
+/**
  * Generate a short instant acknowledgement from the fast model before the
  * main agent starts its tool loop. Gives the user immediate feedback.
  * @param {string} userMessage
@@ -296,6 +314,7 @@ module.exports = {
   assistDetectRepetition,
   assistChatReply,
   assistProgressSummary,
+  assistGatherContext,
   // Constants
   FETCH_SUMMARIZE_THRESHOLD,
   VISION_MAX_CHARS,

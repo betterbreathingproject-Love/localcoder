@@ -2432,6 +2432,8 @@ class DirectBridge {
     this._routeTask = opts.routeTask || null
     // Queue of user messages to inject at the next turn boundary
     this._pendingInjections = []
+    // Flag: true when inject() destroyed the active request — skip retry backoff
+    this._injectionInterrupt = false
     // WindowInputRequester for desktop ask_user — set via setInputRequester()
     this._inputRequester = opts.inputRequester || null
 
@@ -2467,14 +2469,24 @@ class DirectBridge {
   }
 
   /**
-   * Inject a user message into the running agent at the next turn boundary.
-   * The message is queued and inserted before the next LLM call so the model
-   * sees it as a user turn — allowing mid-run course corrections without
-   * interrupting the current inference.
+   * Inject a user message into the running agent. Aborts the current inference
+   * so the message is processed immediately instead of waiting for the turn to
+   * finish. The fast model generates an instant acknowledgement while the main
+   * model restarts with the injection in context.
    */
   inject(message) {
-    if (message && typeof message === 'string' && message.trim()) {
-      this._pendingInjections.push(message.trim())
+    if (!message || typeof message !== 'string' || !message.trim()) return
+    const trimmed = message.trim()
+    this._pendingInjections.push(trimmed)
+
+    // Abort the current SSE stream so the agent loop picks up the injection
+    // on the next iteration instead of waiting for inference to finish.
+    // This makes injections feel immediate — the model restarts its turn
+    // with the user's message already in context.
+    if (this._activeReq) {
+      this._injectionInterrupt = true  // flag so retry loop skips backoff
+      try { this._activeReq.destroy() } catch {}
+      this._activeReq = null
     }
   }
 
@@ -3443,6 +3455,57 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
       }
 
+      // ── Fast model context gathering (turn 0 only, vibe mode) ──────────
+      // Before the main model starts, use the fast model to identify which
+      // files are most relevant to the user's request. This pre-fetches
+      // context so the main model can start writing immediately instead of
+      // spending its first 3-5 turns reading files.
+      if (turn === 0 && assistClient && !systemPromptOverride) {
+        const userPrompt = messages.filter(m => m.role === 'user').pop()?.content || ''
+        // Find the file tree from the variable system message
+        const treeMsg = messages.find(m => m.role === 'system' && m.content && m.content.includes('## Project file tree'))
+        const fileTree = treeMsg?.content || ''
+        if (typeof userPrompt === 'string' && userPrompt && fileTree) {
+          try {
+            const relevantFiles = await assistClient.assistGatherContext(userPrompt, fileTree)
+            if (relevantFiles && relevantFiles.length > 0) {
+              // Read the identified files and inject their content
+              const fileContents = []
+              for (const f of relevantFiles.slice(0, 5)) {
+                const filePath = f.path || f
+                try {
+                  const fullPath = path.resolve(cwd, filePath)
+                  if (fs.existsSync(fullPath)) {
+                    const stat = fs.statSync(fullPath)
+                    if (stat.isFile() && stat.size < 50000) {
+                      const content = fs.readFileSync(fullPath, 'utf-8')
+                      const lines = content.split('\n')
+                      const truncated = lines.length > 200
+                        ? lines.slice(0, 200).join('\n') + `\n... [${lines.length - 200} more lines]`
+                        : content
+                      fileContents.push(`── ${filePath} (${lines.length} lines) ──\n${truncated}`)
+                    }
+                  }
+                } catch { /* skip unreadable files */ }
+              }
+              if (fileContents.length > 0) {
+                messages.push({
+                  role: 'system',
+                  content: `[Pre-gathered context — relevant files identified by fast model]\n${fileContents.join('\n\n')}`,
+                })
+                const fileNames = relevantFiles.slice(0, 5).map(f => f.path || f).join(', ')
+                this.send('qwen-event', {
+                  type: 'fast-assist',
+                  task: 'gather_context',
+                  label: '⚡ Fast Assistant — pre-gathered context',
+                  detail: `${fileContents.length} files: ${fileNames}`,
+                })
+              }
+            }
+          } catch { /* non-fatal — main model will gather its own context */ }
+        }
+      }
+
       // Todo bootstrap — await before first LLM call to prevent concurrent Metal inference.
       // Running fire-and-forget caused SIGABRT: fast model and main model both hit Metal
       // simultaneously. Awaiting serializes them via the server's inference semaphore.
@@ -3500,10 +3563,19 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       for (let attempt = 0; attempt < 8; attempt++) {
         if (this._aborted) return
         try {
+          this._injectionInterrupt = false  // reset before each attempt
           completion = await this._streamCompletion(messages, cwd, model)
           break
         } catch (err) {
           if (this._aborted) return
+          // If the stream was destroyed by inject(), skip retry and proceed
+          // to the next turn where the injection will be drained immediately.
+          if (this._injectionInterrupt) {
+            this._injectionInterrupt = false
+            completion = { text: '', toolCalls: [], usage: null, finishReason: 'interrupted', reasoningContent: null }
+            this.send('qwen-event', { type: 'system', subtype: 'debug', data: '⚡ Inference interrupted by user message — processing immediately' })
+            break
+          }
           const code = err.code || ''
           const msg = err.message || ''
           const isTransient = code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'EPIPE'
@@ -3625,6 +3697,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       const { text: rawText, toolCalls, usage, finishReason, reasoningContent } = completion
+
+      // ── Injection interrupt: skip tool execution, go straight to next turn ──
+      // When inject() destroyed the active request, the completion is empty.
+      // Skip all processing and loop back so the injection is drained immediately.
+      if (finishReason === 'interrupted') {
+        continue
+      }
 
       // ── Adaptive max_tokens adjustment ───────────────────────────────────
       // If the model was truncated (finish_reason 'length'), step up the budget
@@ -5469,11 +5548,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         if (consecutiveReadsWithoutWrite >= 3) {
           messages.push({
             role: 'system',
-            content: `STOP READING. You have made ${consecutiveReadsWithoutWrite} consecutive read/search calls without writing any code. ` +
-              `You have enough context. Start making changes NOW:\n` +
-              `- To CREATE a new file: call write_file({"path": "...", "content": "..."})\n` +
-              `- To MODIFY an existing file: call edit_file({"path": "...", "old_string": "...", "new_string": "..."})\n` +
-              `Do NOT read any more files. Write code NOW.`,
+            content: `You have made ${consecutiveReadsWithoutWrite} consecutive read/search calls without writing any code. ` +
+              `Pause and reflect: what have you learned from these reads? Summarize your findings in 1 sentence, then act on them.\n` +
+              `You likely have enough context now. Your next call should be one of:\n` +
+              `- write_file to create a new file\n` +
+              `- edit_file to modify an existing file\n` +
+              `- bash to run a command\n` +
+              `If you genuinely need more information, explain what specific thing you're looking for and why.`,
           })
           this.send('qwen-event', { type: 'system', subtype: 'warning', data: `⚠️ Read-only loop detected (${consecutiveReadsWithoutWrite} reads, 0 writes) — nudging agent to start writing` })
           // Clear read history so the agent can re-read files if it genuinely
@@ -5586,10 +5667,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         })
         return
       } else if (_unproductiveTurns >= 8 && _unproductiveTurns % 4 === 0) {
-        // Warn at 8 turns, then every 4 turns after
+        // Build a summary of what the agent has been doing to help it self-correct
+        const recentToolSummary = messages.slice(-16)
+          .filter(m => m.role === 'assistant' && m.tool_calls)
+          .flatMap(m => m.tool_calls.map(tc => tc.function?.name))
+          .filter(Boolean)
+          .join(', ')
         messages.push({
           role: 'system',
-          content: `WARNING: You have gone ${_unproductiveTurns} turns without writing any files or running successful commands. You are wasting turns. Either:\n1. Start writing code with write_file/edit_file\n2. Run a bash command that actually works\n3. Call ask_user if you need help\n4. Call task_complete if you are done\nYou will be auto-stopped at ${_MAX_UNPRODUCTIVE_TURNS} unproductive turns.`,
+          content: `You have gone ${_unproductiveTurns} turns without writing any files or running successful commands. Your recent tool calls: ${recentToolSummary || 'none'}.\n\nReflect: what have you learned from all this reading? You likely have enough context now. Pick the most important next step and act on it:\n1. Write code with write_file or edit_file\n2. Run a command with bash\n3. If you're genuinely blocked, call ask_user\n4. If you're done, call task_complete\nYou will be auto-stopped at ${_MAX_UNPRODUCTIVE_TURNS} turns without progress.`,
         })
       }
 
@@ -6215,6 +6301,9 @@ The project file tree is included at the end of this prompt — read it before c
 
 ## Tool call rules
 - ALWAYS use tools to read, write, and execute. Never output code or file contents as plain text — the user cannot use it.
+- Before each tool call, write a brief 1-sentence explanation of what you're about to do and why. This helps the user follow your progress and helps you stay on track. Example: "The build failed with a missing import — let me check the header file." Then call the tool.
+- After getting a tool result, briefly note what you learned before calling the next tool. Example: "Found the issue — the function signature changed in v2. Updating the caller."
+- Do NOT write long explanations or plans. Keep reasoning to 1-2 sentences between tool calls. The goal is a running commentary, not an essay.
 - read_file: use this to read source files — NOT bash/cat. read_file handles large files correctly with line ranges and avoids output limits. Never use cat, head, or tail to read source files. For files under 500 lines, read the entire file at once (omit start_line/end_line). For larger files, read in chunks of 500+ lines — never page through a file 200 lines at a time.
 - read_files: PREFERRED over read_file when you need 2+ files. Pass all paths in one call — this is 5-10x faster than separate read_file calls. ALWAYS batch your reads: if you know you need multiple files, use read_files({"paths": ["file1.swift", "file2.swift", ...]}) instead of calling read_file on each one separately. Maximum 20 files per call.
 - edit_file: re-read the target file before editing IF the file content is no longer in your context (e.g. after compaction). If you just read it this session and it's still visible above, proceed directly with the edit.
@@ -6306,6 +6395,7 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
 
     // Reset per-run state so the next run() starts clean
     this._pendingInjections = []
+    this._injectionInterrupt = false
     this._pendingDiagnostics = null
     this._coalescedToolCallIds = new Set()
     this._sseErrorPending = false
