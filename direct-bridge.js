@@ -3160,10 +3160,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // async and inject results here at the start of the next turn.
       if (this._pendingDiagnostics) {
         try {
-          // 10s timeout — don't let a slow LSP scan block the agent
+          // Non-blocking: check if the LSP scan has completed, don't wait for it.
+          // If it's still running, skip and it'll be picked up next turn.
           const diagResult = await Promise.race([
             this._pendingDiagnostics,
-            new Promise(r => setTimeout(() => r(null), 10000)),
+            new Promise(r => setTimeout(() => r(null), 0)),
           ])
           if (diagResult && diagResult.errors && diagResult.errors.length > 0) {
             const diagLines = diagResult.errors.map(d => `  ${d.severity || 'error'}: ${d.message} (line ${d.line || '?'})`).join('\n')
@@ -3172,9 +3173,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               content: `⚠️ LSP diagnostics for ${diagResult.path} (from previous edit):\n${diagLines}\nFix these errors before continuing.`,
             })
             this.send('qwen-event', { type: 'lsp-activity', action: 'deferred-diagnostics', path: diagResult.path, count: diagResult.errors.length })
+            this._pendingDiagnostics = null  // consumed — clear it
+          } else if (diagResult === null) {
+            // Timeout — LSP scan still running, leave the promise for next turn
+          } else {
+            this._pendingDiagnostics = null  // no errors — clear it
           }
-        } catch { /* diagnostics failed — skip silently */ }
-        this._pendingDiagnostics = null
+        } catch {
+          this._pendingDiagnostics = null  // failed — clear it
+        }
       }
 
       // Warn the model when running low on turns so it can wrap up gracefully
