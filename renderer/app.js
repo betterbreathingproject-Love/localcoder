@@ -1393,13 +1393,15 @@ function sendAgent() {
   const prompt = document.getElementById('agentPrompt').value.trim()
   if(!prompt) return
 
+  // Clear input immediately to prevent double-submit
+  document.getElementById('agentPrompt').value = ''
+
   // ── orchestrator injection mode ──────────────────────────────────────────
   // When the task graph / spec orchestrator is running, the main chat input
   // acts as a live injection channel rather than starting a new agent session.
   // This check must come BEFORE the isGenerating guard — orchestrator sets
   // isGenerating=true, which would otherwise block injection entirely.
   if (_orchestratorRunning) {
-    document.getElementById('agentPrompt').value = ''
     _resetSendBtn()  // revert button back to Stop immediately after send
     window.app.taskGraphInject(prompt).then(result => {
       if (result?.error) {
@@ -1418,12 +1420,10 @@ function sendAgent() {
   if (prompt.startsWith('/')) {
     const parsed = parseSlashCommand(prompt)
     if (parsed && SLASH_COMMANDS.has(parsed.command)) {
-      document.getElementById('agentPrompt').value = ''
       hideSlashAutocomplete()
       SLASH_COMMANDS.get(parsed.command)(parsed.args)
       return
     } else if (parsed) {
-      document.getElementById('agentPrompt').value = ''
       hideSlashAutocomplete()
       appendMsg('system', `⚠️ Unknown command: /${esc(parsed.command)}`)
       SLASH_COMMANDS.get('help')('')
@@ -1435,12 +1435,14 @@ function sendAgent() {
 
   // auto-create session if none
   if (!activeSessionId && activeProjectId) {
+    isGenerating = true  // guard against double-send while session is being created
     newSession(activeSessionType || 'vibe').then(() => {
       sendAgentMode(prompt)
     })
     return
   }
 
+  isGenerating = true  // guard against double-send from rapid Enter/click
   sendAgentMode(prompt)
 }
 
