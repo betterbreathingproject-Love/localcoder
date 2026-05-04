@@ -3565,6 +3565,16 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
       }
 
+      // ── Turn 0: ask the model to explain its approach before acting ─────
+      // This produces visible inline text so the user knows what's about to happen.
+      // Keep it short — 1-2 sentences max, then proceed with tool calls.
+      if (turn === 0) {
+        messages.push({
+          role: 'system',
+          content: 'Before using any tools, briefly tell the user what you\'re about to do and why (1-2 sentences). Then proceed with your first tool call in the same response.',
+        })
+      }
+
       for (let attempt = 0; attempt < 8; attempt++) {
         if (this._aborted) return
         try {
