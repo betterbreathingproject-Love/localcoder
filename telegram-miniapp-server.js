@@ -30,6 +30,8 @@ class MiniAppServer extends EventEmitter {
     this._wss = null
     this._clients = new Set()
     this._logs = []
+    this._lastTextDeltaIdx = null
+    this._lastTextDeltaTime = null
   }
 
   /**
