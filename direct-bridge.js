@@ -2965,54 +2965,51 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
       }
 
-      // Gather active diagnostics and inject into context so the agent
-      // is aware of existing errors before it starts working.
-      // Wrapped in a 5s timeout — LSP scans on large Swift projects can hang.
+      // Gather active diagnostics — fire-and-forget so it doesn't block agent start.
+      // Results are injected as a system message on the first turn of _agentLoop
+      // via the existing _pendingDiagnostics mechanism.
       if (!_isOrchestratorTask && this._lspManager?.getStatus().status === 'ready') {
-        console.log('[direct-bridge] run() LSP diagnostics starting, elapsed %dms', Date.now() - _runT0);
-        try {
-          let diagFiles = detectEntryPoints(workDir)
-          const hasXcodeProject = (() => {
-            try {
-              return fs.readdirSync(workDir).some(e => e.endsWith('.xcodeproj') || e.endsWith('.xcworkspace'))
-            } catch { return false }
-          })()
-          if (hasXcodeProject) {
-            try {
-              const { execSync } = require('child_process')
-              const swiftFiles = execSync(
-                `find "${workDir}" -name "*.swift" -not -path "*/DerivedData/*" -not -path "*/.build/*" 2>/dev/null | head -20`,
-                { timeout: 3000, encoding: 'utf-8' }
-              ).trim().split('\n').filter(Boolean)
-              const priority = swiftFiles.filter(f => /App\.swift$|ContentView\.swift$|main\.swift$/i.test(f))
-              const rest = swiftFiles.filter(f => !priority.includes(f))
-              diagFiles = [...priority, ...rest].slice(0, 8)  // cap at 8 files to keep it fast
-            } catch { /* fall back to default */ }
-          }
+        console.log('[direct-bridge] run() LSP diagnostics starting (lazy), elapsed %dms', Date.now() - _runT0);
+        const _lspMgr = this._lspManager
+        const _workDir = workDir
+        this._pendingDiagnostics = (async () => {
+          try {
+            let diagFiles = detectEntryPoints(_workDir)
+            const hasXcodeProject = (() => {
+              try {
+                return fs.readdirSync(_workDir).some(e => e.endsWith('.xcodeproj') || e.endsWith('.xcworkspace'))
+              } catch { return false }
+            })()
+            if (hasXcodeProject) {
+              try {
+                const { execSync } = require('child_process')
+                const swiftFiles = execSync(
+                  `find "${_workDir}" -name "*.swift" -not -path "*/DerivedData/*" -not -path "*/.build/*" 2>/dev/null | head -40`,
+                  { timeout: 5000, encoding: 'utf-8' }
+                ).trim().split('\n').filter(Boolean)
+                const priority = swiftFiles.filter(f => /App\.swift$|ContentView\.swift$|main\.swift$/i.test(f))
+                const rest = swiftFiles.filter(f => !priority.includes(f))
+                diagFiles = [...priority, ...rest].slice(0, 20)
+              } catch { /* fall back to default */ }
+            }
 
-          // 5s wall-clock timeout — don't let LSP block the agent start
-          const diagSummary = await Promise.race([
-            this._lspManager.getProjectDiagnosticsSummary(diagFiles),
-            new Promise(r => setTimeout(() => r({ totalErrors: 0, files: [] }), 5000)),
-          ])
-          if (diagSummary.totalErrors > 0) {
-            const diagLines = []
-            for (const f of diagSummary.files) {
-              const rel = path.relative(workDir, f.path)
-              for (const e of f.errors) {
-                diagLines.push(`  ${rel}:${e.line || '?'} — ${e.message}`)
+            const diagSummary = await _lspMgr.getProjectDiagnosticsSummary(diagFiles)
+            if (diagSummary.totalErrors > 0) {
+              const diagLines = []
+              for (const f of diagSummary.files) {
+                const rel = path.relative(_workDir, f.path)
+                for (const e of f.errors) {
+                  diagLines.push(`  ${rel}:${e.line || '?'} — ${e.message}`)
+                }
+              }
+              return {
+                path: 'project',
+                errors: diagLines.slice(0, 30).map(l => ({ message: l.trim(), severity: 'error' })),
               }
             }
-            if (diagLines.length > 0) {
-              messages.push({
-                role: 'system',
-                content: `[LSP] The project currently has ${diagSummary.totalErrors} error(s) detected by the language server:\n${diagLines.slice(0, 30).join('\n')}\n\nFix these errors — they will prevent the app from building.`,
-              })
-              this.send('qwen-event', { type: 'lsp-activity', action: 'session-diagnostics', count: diagSummary.totalErrors })
-            }
-          }
-        } catch { /* diagnostics pre-fetch failed — proceed without */ }
-        console.log('[direct-bridge] run() LSP diagnostics done, elapsed %dms', Date.now() - _runT0);
+          } catch { /* non-fatal */ }
+          return null
+        })()
       }
 
       console.log('[direct-bridge] run() entering agentLoop, elapsed %dms', Date.now() - _runT0);
