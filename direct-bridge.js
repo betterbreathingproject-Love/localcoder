@@ -6172,14 +6172,23 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     const rolePreambles = {
       'explore':
         'You are in EXPLORE mode. Investigate the codebase structure and report findings.\n' +
-        'Steps: (1) list_dir on root, (2) read entry points and config files, (3) search_files for key patterns, (4) bash to run/check output if useful.\n' +
+        'CRITICAL: Gather ALL context in minimum turns. Follow this exact sequence:\n' +
+        '  Turn 1: list_dir on root to see the full project structure.\n' +
+        '  Turn 2: read_files with ALL key files in ONE call (up to 20 files). Include entry points, configs, main source files. Do NOT read one file at a time.\n' +
+        '  Turn 3: If needed, one more read_files batch for files you missed. Then STOP reading.\n' +
+        '  Turn 4: Summarize findings and call task_complete.\n' +
+        'You MUST use read_files (batch) not read_file (single). Maximum 4 turns total.\n' +
         'Constraint: do NOT write or modify any files.\n' +
-        'Output format: structured summary — directory tree, key components, data flow, patterns, notable dependencies.',
+        'Output format: structured summary — what exists, what works, what\'s missing, recommendations.',
 
       'context-gather':
         'You are in CONTEXT GATHER mode. Find the exact files and lines needed for a specific task — nothing more.\n' +
-        'Steps: (1) identify names/keywords the task touches, (2) search_files for those patterns, (3) read only the specific sections you need (not whole files unless under 200 lines), (4) trace direct imports/dependencies.\n' +
-        'Constraint: do NOT write or modify any files. Do NOT read the entire project. Read the minimum needed.\n' +
+        'CRITICAL: Gather ALL context in minimum turns:\n' +
+        '  Turn 1: list_dir to identify relevant paths.\n' +
+        '  Turn 2: read_files with ALL relevant files in ONE call (up to 20). Do NOT read one file at a time.\n' +
+        '  Turn 3: Summarize what you found and call task_complete.\n' +
+        'You MUST use read_files (batch) not read_file (single). Maximum 3 turns total.\n' +
+        'Constraint: do NOT write or modify any files. Do NOT read the entire project.\n' +
         'Output format: list of `file:line_range — reason it is relevant` entries. Be precise and minimal.',
 
       'code-search':
