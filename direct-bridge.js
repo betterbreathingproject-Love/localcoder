@@ -285,15 +285,8 @@ class InputRequester {
     try {
       await this._bot.sendMessage(this._chatId, `🤖 Agent asks:\n${question}`)
       return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          this._bot.removeListener('message', handler)
-          this._pending = false
-          resolve('(No response received within 5 minutes)')
-        }, 5 * 60 * 1000)
-
         const handler = ({ chatId, text }) => {
           if (chatId === this._chatId) {
-            clearTimeout(timeout)
             this._bot.removeListener('message', handler)
             this._pending = false
             resolve(text)
