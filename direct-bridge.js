@@ -3474,7 +3474,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           this.send('qwen-event', { type: 'todo-bootstrap', todos: this._task.initialTodos })
           _lastTodos = this._task.initialTodos
           _bootstrapDone = true
-        } else if (assistClient && assistClient.TODO_BOOTSTRAP_ENABLED) {
+        } else if (false && assistClient && assistClient.TODO_BOOTSTRAP_ENABLED) {
+          // TODO: re-enable once fast model semaphore contention is resolved
           const userPrompt = messages.filter(m => m.role === 'user').pop()?.content || ''
           if (typeof userPrompt === 'string' && userPrompt) {
             try {
