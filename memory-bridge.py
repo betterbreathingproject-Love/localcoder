@@ -2033,6 +2033,7 @@ def _extract_generate(prompt: str, max_tokens: int = 400) -> str:
     import threading as _thr, sys as _sys
     _tid = _thr.current_thread().name
     metal_lock = _get_metal_lock()
+    print(f"[metal-trace] _extract_generate: metal_lock id={id(metal_lock)} (thread={_tid})", file=_sys.stderr, flush=True)
 
     # Check both the flag and the processor type at runtime (self-heal for models
     # loaded before the vision-detection code existed)

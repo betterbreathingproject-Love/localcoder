@@ -1792,7 +1792,7 @@ async def chat_completions(req: ChatRequest):
                 _tid = _thr.current_thread().name
                 _metal_trace_state["last_op"] = "run_stream:waiting_lock"
                 _metal_trace_state["last_thread"] = _tid
-                print(f"[metal-trace] run_stream: acquiring _metal_lock (thread={_tid})", file=sys.stderr, flush=True)
+                print(f"[metal-trace] run_stream: acquiring _metal_lock id={id(_metal_lock)} (thread={_tid})", file=sys.stderr, flush=True)
                 with _metal_lock:
                     _metal_trace_state["last_op"] = "run_stream:stream_generate"
                     _metal_trace_state["lock_held_by"] = _tid
@@ -2324,6 +2324,14 @@ async def chat_completions(req: ChatRequest):
 
 
 if __name__ == "__main__":
+    # ── CRITICAL: Register this module as "server" in sys.modules ─────────────
+    # When server.py runs as __main__, importlib.import_module("server") creates
+    # a SECOND module instance with its own _metal_lock, _inference_semaphore, etc.
+    # This causes memory-bridge.py to get a different lock than the one protecting
+    # Metal inference here — leading to concurrent Metal access and SIGABRT.
+    # By aliasing __main__ as "server", all importlib calls return THIS instance.
+    sys.modules["server"] = sys.modules[__name__]
+
     import uvicorn, argparse, signal
 
     parser = argparse.ArgumentParser()
