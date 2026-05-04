@@ -37,22 +37,10 @@ function _renderToolParams(input) {
 function renderToolUse(name, input, status='running') {
   const id = 'tool-' + Date.now() + '-' + Math.random().toString(36).slice(2,6)
 
-  // Special case: task_complete — render the summary as formatted content
+  // Special case: task_complete — just show a minimal "done" indicator.
+  // The summary is already rendered as inline text above this block.
   if (name === 'task_complete') {
-    const obj = typeof input === 'string' ? (() => { try { return JSON.parse(input) } catch { return null } })() : input
-    const summary = (obj?.summary || '').replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"')
-    const rendered = summary ? esc(summary).replace(/\n/g, '<br>') : 'Task completed.'
-    return `<div class="tool-block ${status}" id="${id}">
-      <div class="tool-header">
-        <span class="tool-icon">🏁</span>
-        <div class="tool-header-info">
-          <span class="tool-name">Task Complete</span>
-          <span class="tool-name-raw">task_complete</span>
-        </div>
-        <span class="tool-status ${status}">${status === 'done' ? '✓ Done' : 'Running…'}</span>
-      </div>
-      <div class="tool-result-body" style="padding:10px 14px;font-size:13px;line-height:1.6">${rendered}</div>
-    </div>`
+    return `<div class="tool-block ${status}" id="${id}" style="display:none"></div>`
   }
 
   const icons = { read_file:'📖', read_files:'📚', write_file:'✏️', edit_file:'✏️', edit_files:'✏️', bash:'⚡', search:'🔍', list_dir:'📁',
