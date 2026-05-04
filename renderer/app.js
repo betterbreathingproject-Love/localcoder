@@ -2250,9 +2250,13 @@ async function sendAgentMode(prompt, opts = {}) {
 
         // If the agent's text ends with a numbered list (looks like options),
         // inject clickable quick-reply chips so the user can respond easily.
-        // Find the last visible text segment for chip injection
+        // Check both inline text segments and the task_complete summary.
         const lastVisibleSeg = document.getElementById(respId + '-tools')?.querySelector('.msg-text-inline:last-of-type')
-        if (lastVisibleSeg) _injectQuickReplyChips(lastVisibleSeg, fullText)
+        // Also check the task_complete tool block for follow-up questions
+        const taskCompleteBlock = document.getElementById(respId + '-tools')?.querySelector('.tool-block:last-child .tool-result-body')
+        const chipTarget = lastVisibleSeg || taskCompleteBlock
+        const chipSource = (taskCompleteBlock?.textContent || '') + '\n' + fullText
+        if (chipTarget) _injectQuickReplyChips(chipTarget, chipSource)
         // Finalize thinking box with extracted content
         const finalThink = extractThinking(fullText)
         const tb = document.getElementById(respId+'-think-body')
