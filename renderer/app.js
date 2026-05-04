@@ -146,6 +146,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadProjectList()
   await loadContextSettings()
   await loadApiKeys()
+  await loadOpenRouterSettings()
   await restoreActiveSpec()
   checkCompactor()
   // Auto-load preview for current project
@@ -3314,6 +3315,73 @@ async function saveApiKeys() {
     brave: document.getElementById('ak-brave')?.value?.trim() || '',
   }
   await window.app.saveApiKeys(keys)
+}
+
+// ── OpenRouter settings ───────────────────────────────────────────────────────
+async function loadOpenRouterSettings() {
+  try {
+    const settings = await window.app.getAppSettings()
+    const enabled = settings.provider === 'openrouter'
+    const checkbox = document.getElementById('or-enabled')
+    const fields = document.getElementById('or-fields')
+    if (checkbox) checkbox.checked = enabled
+    if (fields) fields.style.display = enabled ? '' : 'none'
+    if (enabled) {
+      const keyEl = document.getElementById('or-apikey')
+      const modelEl = document.getElementById('or-model')
+      if (keyEl && settings.openrouterApiKey) keyEl.value = settings.openrouterApiKey
+      if (modelEl && settings.openrouterModel) modelEl.value = settings.openrouterModel
+      _updateOpenRouterStatus(settings)
+    }
+    _updateOpenRouterBadge(settings)
+  } catch (_) {}
+}
+
+async function saveOpenRouterSettings() {
+  const enabled = document.getElementById('or-enabled')?.checked || false
+  const apiKey = document.getElementById('or-apikey')?.value?.trim() || ''
+  const model = document.getElementById('or-model')?.value?.trim() || ''
+
+  // Show/hide the fields section
+  const fields = document.getElementById('or-fields')
+  if (fields) fields.style.display = enabled ? '' : 'none'
+
+  const settings = {
+    provider: enabled ? 'openrouter' : 'local',
+    openrouterApiKey: apiKey,
+    openrouterModel: model,
+  }
+  await window.app.saveAppSettings(settings)
+  _updateOpenRouterStatus(settings)
+  _updateOpenRouterBadge(settings)
+}
+
+function _updateOpenRouterStatus(settings) {
+  const statusEl = document.getElementById('or-status')
+  if (!statusEl) return
+  if (!settings.openrouterApiKey) {
+    statusEl.textContent = 'No API key set'
+    statusEl.style.color = 'var(--muted)'
+  } else if (!settings.openrouterModel) {
+    statusEl.textContent = 'API key set — enter a model ID'
+    statusEl.style.color = 'var(--yellow, #f5a623)'
+  } else {
+    statusEl.textContent = `Active — ${settings.openrouterModel}`
+    statusEl.style.color = 'var(--green)'
+  }
+}
+
+function _updateOpenRouterBadge(settings) {
+  const badge = document.getElementById('openrouterBadge')
+  const localBtn = document.getElementById('modelSwitcherBtn')
+  if (!badge) return
+  const isActive = settings.provider === 'openrouter' && settings.openrouterApiKey
+  badge.style.display = isActive ? 'flex' : 'none'
+  if (localBtn) localBtn.style.display = isActive ? 'none' : ''
+  if (isActive) {
+    const modelLabel = document.getElementById('openrouterBadgeModel')
+    if (modelLabel) modelLabel.textContent = settings.openrouterModel || 'OpenRouter'
+  }
 }
 
 // ── telegram bot ──────────────────────────────────────────────────────────────

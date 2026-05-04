@@ -2654,11 +2654,65 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             const body = JSON.stringify({ messages, max_tokens: 2048, stream: true })
             let _chatAccumulated = ''
             await new Promise((resolve, reject) => {
-              const r = http.request({
+              // ── OpenRouter routing for chat mode ──────────────────────────
+              let chatUrl = `${SERVER_URL}/v1/chat/completions`
+              let chatHeaders = {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+              }
+              let chatTransport = http
+              try {
+                const { getAppSettings } = require('./projects')
+                const appSettings = getAppSettings()
+                if (appSettings.provider === 'openrouter' && appSettings.openrouterApiKey) {
+                  chatUrl = OPENROUTER_CHAT_URL
+                  chatHeaders['Authorization'] = `Bearer ${appSettings.openrouterApiKey}`
+                  chatHeaders['HTTP-Referer'] = 'https://github.com/qwencoder-mac-studio'
+                  chatHeaders['X-Title'] = 'QwenCoder Mac Studio'
+                  chatTransport = require('https')
+                  // Rebuild body with the configured model
+                  const chatBody = JSON.parse(body)
+                  if (appSettings.openrouterModel) chatBody.model = appSettings.openrouterModel
+                  delete chatBody.repetition_penalty
+                  const newBody = JSON.stringify(chatBody)
+                  chatHeaders['Content-Length'] = Buffer.byteLength(newBody)
+                  const r = chatTransport.request(chatUrl, { method: 'POST', headers: chatHeaders, timeout: 120000 }, (res) => {
+                    let buf = ''
+                    res.on('data', chunk => {
+                      if (this._aborted) { r.destroy(); return }
+                      buf += chunk.toString()
+                      const lines = buf.split('\n')
+                      buf = lines.pop()
+                      for (const line of lines) {
+                        if (line.startsWith('data: [DONE]')) continue
+                        if (line.startsWith('data: ')) {
+                          try {
+                            const parsed = JSON.parse(line.slice(6))
+                            const delta = parsed.choices?.[0]?.delta?.content
+                            if (delta) {
+                              _chatAccumulated = (_chatAccumulated || '') + delta
+                              this.send('qwen-event', { type: 'text-delta', text: _chatAccumulated })
+                            }
+                          } catch { /* skip */ }
+                        }
+                      }
+                    })
+                    res.on('end', resolve)
+                    res.on('error', reject)
+                  })
+                  r.on('error', reject)
+                  r.on('timeout', () => { r.destroy(); reject(new Error('Request timed out')) })
+                  r.write(newBody)
+                  r.end()
+                  this._currentReq = r
+                  return
+                }
+              } catch (_) { /* fall through to local */ }
+              const r = chatTransport.request({
                 hostname: '127.0.0.1', port: SERVER_PORT,
                 path: '/v1/chat/completions', method: 'POST',
                 timeout: 120000,
-                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+                headers: chatHeaders,
               }, (res) => {
                 let buf = ''
                 res.on('data', chunk => {
