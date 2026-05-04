@@ -192,6 +192,10 @@ def _should_clear_metal_cache() -> bool:
     Only clear Metal cache when memory pressure is actually high,
     not before every request. Clearing takes ~50ms and wastes time
     when memory is fine.
+
+    IMPORTANT: Caller must already hold _metal_lock (or be inside a
+    run_in_executor block that holds it) because mx.metal.get_active_memory()
+    is a Metal API call that races with concurrent GPU work.
     """
     global _last_metal_clear_time
     try:
@@ -275,7 +279,8 @@ def _unload_model():
         gc.collect()
         try:
             import mlx.core as mx
-            mx.metal.clear_cache()
+            with _metal_lock:
+                mx.metal.clear_cache()
         except Exception:
             pass
         print(f"[server] Model unloaded, Metal cache cleared")
@@ -357,18 +362,19 @@ def _warmup_model():
     print(f"[server] Warming up Metal shaders...", file=sys.stderr)
     start = time.perf_counter()
     try:
-        if _model_is_vision:
-            from mlx_vlm import generate
-            from mlx_vlm.prompt_utils import apply_chat_template
-            warmup_prompt = apply_chat_template(
-                _processor, _config, "Hi",
-                num_images=0,
-            )
-            generate(_model, _processor, warmup_prompt, max_tokens=1, verbose=False)
-        else:
-            from mlx_lm import generate
-            warmup_prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
-            generate(_model, _processor, warmup_prompt, max_tokens=1)
+        with _metal_lock:
+            if _model_is_vision:
+                from mlx_vlm import generate
+                from mlx_vlm.prompt_utils import apply_chat_template
+                warmup_prompt = apply_chat_template(
+                    _processor, _config, "Hi",
+                    num_images=0,
+                )
+                generate(_model, _processor, warmup_prompt, max_tokens=1, verbose=False)
+            else:
+                from mlx_lm import generate
+                warmup_prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
+                generate(_model, _processor, warmup_prompt, max_tokens=1)
         elapsed = time.perf_counter() - start
         print(f"[server] Metal shaders warm — first-token latency pre-compiled ({elapsed:.2f}s)", file=sys.stderr)
     except Exception as e:
@@ -1054,9 +1060,10 @@ def autotune_stats():
     try:
         import mlx.core as mx
         import subprocess
-        active_gb = mx.metal.get_active_memory() / (1024**3)
-        peak_gb = mx.metal.get_peak_memory() / (1024**3)
-        cache_gb = mx.metal.get_cache_memory() / (1024**3)
+        with _metal_lock:
+            active_gb = mx.metal.get_active_memory() / (1024**3)
+            peak_gb = mx.metal.get_peak_memory() / (1024**3)
+            cache_gb = mx.metal.get_cache_memory() / (1024**3)
         total_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=1).strip())
         total_gb = total_bytes / (1024**3)
         pressure_pct = round(active_gb / total_gb * 100, 1) if total_gb > 0 else 0
@@ -1122,7 +1129,8 @@ async def admin_speculative(req: SpeculativeRequest):
         import gc; gc.collect()
         try:
             import mlx.core as mx
-            mx.metal.clear_cache()
+            with _metal_lock:
+                mx.metal.clear_cache()
         except Exception:
             pass
         print("[server] Speculative decoding disabled, draft model unloaded")
@@ -1389,11 +1397,12 @@ async def benchmark():
                 if prompt_tps is None:
                     prompt_tps = prompt_tokens / elapsed if elapsed > 0 else 0
 
-            peak_mem = mx.metal.get_peak_memory() / (1024**3)
+            with _metal_lock:
+                peak_mem = mx.metal.get_peak_memory() / (1024**3)
+                active_mem = mx.metal.get_active_memory() / (1024**3)
             # Available memory = total system memory minus what MLX is actively using
             import os
             total_mem = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024**3)
-            active_mem = mx.metal.get_active_memory() / (1024**3)
             avail_mem = max(0, total_mem - active_mem)
 
             # Read context window from model config
@@ -1411,7 +1420,8 @@ async def benchmark():
             if "metal" in str(e).lower() or "mps" in str(e).lower():
                 try:
                     import mlx.core as mx
-                    mx.metal.clear_cache()
+                    with _metal_lock:
+                        mx.metal.clear_cache()
                     import gc
                     gc.collect()
                 except Exception:
@@ -1525,41 +1535,45 @@ async def chat_completions(req: ChatRequest):
             print(f"[prefix-cache] Will build cache after first inference completes...", file=sys.stderr)
             _pending_cache_build = sys_prompt_text
 
-    # Smart cache clearing (autotune optimization):
-    # Only clear Metal cache when memory pressure is actually high (>65% active).
-    # Clearing unconditionally wastes ~50ms per request even when memory is fine.
-    if _should_clear_metal_cache():
-        try:
-            import mlx.core as mx
-            import gc
-            gc.collect()
-            mx.metal.clear_cache()
-            print("[autotune] Metal cache cleared (memory pressure >65%)", file=sys.stderr)
-        except Exception:
-            pass
+    # Smart cache clearing and memory pressure checks.
+    # These Metal API calls must hold _metal_lock to avoid racing with
+    # inference threads that are submitting Metal command buffers.
+    # Without the lock, concurrent mx.metal.get_active_memory() / clear_cache()
+    # can trigger "addCompletedHandler: on committed buffer" → SIGABRT.
+    def _pre_inference_metal_checks():
+        """Run Metal memory checks under _metal_lock. Returns error string or None."""
+        with _metal_lock:
+            if _should_clear_metal_cache():
+                try:
+                    import mlx.core as mx
+                    import gc
+                    gc.collect()
+                    mx.metal.clear_cache()
+                    print("[autotune] Metal cache cleared (memory pressure >65%)", file=sys.stderr)
+                except Exception:
+                    pass
+            try:
+                import mlx.core as mx
+                mem_active = mx.metal.get_active_memory() / (1024**3)
+                import subprocess
+                total_mem_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
+                total_mem_gb = total_mem_bytes / (1024**3)
+                threshold_gb = total_mem_gb * 0.80
+                if mem_active > threshold_gb:
+                    print(f"[server] ⚠️ Metal memory too high: {mem_active:.2f} GB / {total_mem_gb:.1f} GB (threshold: {threshold_gb:.1f} GB)", file=sys.stderr)
+                    mx.metal.clear_cache()
+                    import gc
+                    gc.collect()
+                    mem_after = mx.metal.get_active_memory() / (1024**3)
+                    if mem_after > threshold_gb:
+                        return f"Server busy — Metal memory too high ({mem_after:.1f}/{total_mem_gb:.1f} GB). Retry after a moment."
+            except Exception:
+                pass
+            return None
 
-    # Preventive guard: check Metal memory before inference
-    try:
-        import mlx.core as mx
-        mem_active = mx.metal.get_active_memory() / (1024**3)
-        # Use 80% of system memory as threshold (Apple Silicon shares RAM with GPU)
-        import subprocess
-        total_mem_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
-        total_mem_gb = total_mem_bytes / (1024**3)
-        threshold_gb = total_mem_gb * 0.80
-        if mem_active > threshold_gb:
-            print(f"[server] ⚠️ Metal memory too high: {mem_active:.2f} GB / {total_mem_gb:.1f} GB (threshold: {threshold_gb:.1f} GB)", file=sys.stderr)
-            mx.metal.clear_cache()
-            import gc
-            gc.collect()
-            # Re-check after clearing
-            mem_after = mx.metal.get_active_memory() / (1024**3)
-            if mem_after > threshold_gb:
-                raise HTTPException(503, f"Server busy — Metal memory too high ({mem_after:.1f}/{total_mem_gb:.1f} GB). Retry after a moment.")
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # If memory check fails, proceed anyway
+    _mem_err = await asyncio.get_event_loop().run_in_executor(None, _pre_inference_metal_checks)
+    if _mem_err:
+        raise HTTPException(503, _mem_err)
 
     # Preventive guard: reject dangerously large prompts
     # Context budget is centrally configured in config.js; server uses CTX_WINDOW env var
@@ -1632,10 +1646,14 @@ async def chat_completions(req: ChatRequest):
         # When Metal memory is above 60%, cap max_tokens to prevent the
         # generation from exhausting remaining RAM and causing a SIGABRT crash.
         # Each token uses ~2-4 MB of KV cache on the 35B model.
+        # NOTE: mx.metal.get_active_memory() is a Metal API call that must be
+        # serialized with GPU work. We read it under _metal_lock to avoid
+        # racing with an inference thread's command buffer submissions.
         try:
             import mlx.core as mx
             import subprocess
-            _mem_active = mx.metal.get_active_memory() / (1024**3)
+            with _metal_lock:
+                _mem_active = mx.metal.get_active_memory() / (1024**3)
             _total_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
             _total_gb = _total_bytes / (1024**3)
             _pressure = _mem_active / _total_gb
@@ -1703,7 +1721,8 @@ async def chat_completions(req: ChatRequest):
         if len(prompt) > 50000:
             try:
                 import mlx.core as mx
-                mx.metal.clear_cache()
+                with _metal_lock:
+                    mx.metal.clear_cache()
             except Exception:
                 pass
 
@@ -1753,12 +1772,17 @@ async def chat_completions(req: ChatRequest):
                                 pass
                             loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
                     finally:
-                        # Small delay to let Metal command buffer completion
-                        # handlers fire before the next agent acquires the lock.
-                        # mx.synchronize() can deadlock inside run_in_executor —
-                        # a brief sleep is sufficient to drain pending callbacks.
-                        import time
-                        time.sleep(0.05)
+                        # Drain pending Metal command buffer completion handlers
+                        # before releasing the lock. mx.synchronize() ensures all
+                        # enqueued GPU work finishes — prevents the next lock holder
+                        # from hitting "addCompletedHandler: on committed buffer".
+                        try:
+                            import mlx.core as mx
+                            mx.synchronize()
+                        except Exception:
+                            # Fallback: brief sleep if synchronize fails
+                            import time
+                            time.sleep(0.05)
                         # Smart post-inference cache clearing — only when memory pressure warrants it
                         if _should_clear_metal_cache():
                             try:
@@ -2061,10 +2085,12 @@ async def chat_completions(req: ChatRequest):
                 _cancelled.set()
                 _cleanup_images(images)
 
-        # Aggressive post-request cache clearing to prevent memory accumulation
+        # Post-request cache clearing — done under _metal_lock to avoid racing
+        # with any concurrent Metal work (e.g. deferred prefix cache build).
         try:
             import mlx.core as mx
-            mx.metal.clear_cache()
+            with _metal_lock:
+                mx.metal.clear_cache()
         except Exception:
             pass
 
@@ -2130,9 +2156,13 @@ async def chat_completions(req: ChatRequest):
                 result = generate(_model, _processor, _ns_prompt, draft_model=_ns_draft, **kwargs)
             else:
                 result = generate(_model, _processor, _ns_prompt, **kwargs)
-            # Brief pause to let Metal completion handlers fire before lock releases
-            import time
-            time.sleep(0.05)
+            # Drain pending Metal completion handlers before releasing the lock
+            try:
+                import mlx.core as mx
+                mx.synchronize()
+            except Exception:
+                import time
+                time.sleep(0.05)
             if images:
                 try:
                     import mlx.core as mx
@@ -2151,9 +2181,10 @@ async def chat_completions(req: ChatRequest):
         traceback.print_exc(file=sys.stderr)
         try:
             import mlx.core as mx
-            mem_active = mx.metal.get_active_memory() / (1024**3)
-            mem_peak = mx.metal.get_peak_memory() / (1024**3)
-            mem_cache = mx.metal.get_cache_memory() / (1024**3)
+            with _metal_lock:
+                mem_active = mx.metal.get_active_memory() / (1024**3)
+                mem_peak = mx.metal.get_peak_memory() / (1024**3)
+                mem_cache = mx.metal.get_cache_memory() / (1024**3)
             print(f"[server] Metal memory — active: {mem_active:.2f} GB, peak: {mem_peak:.2f} GB, cache: {mem_cache:.2f} GB", file=sys.stderr)
         except Exception:
             pass
@@ -2162,12 +2193,14 @@ async def chat_completions(req: ChatRequest):
     _cleanup_images(images)
 
     # Post-request cache clearing — only when memory pressure warrants it
-    if _should_clear_metal_cache():
-        try:
-            import mlx.core as mx
-            mx.metal.clear_cache()
-        except Exception:
-            pass
+    # Must hold _metal_lock since _should_clear_metal_cache reads Metal state
+    with _metal_lock:
+        if _should_clear_metal_cache():
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except Exception:
+                pass
 
     response_text = result.text if hasattr(result, "text") else str(result)
 

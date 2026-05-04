@@ -2126,12 +2126,22 @@ async def _handle_vision(payload: dict) -> AssistResponse:
                 _extract_model = None
                 _extract_processor = None
                 gc.collect()
-                try:
-                    import mlx.core as mx
-                    mx.metal.clear_cache()
-                except Exception:
-                    pass
-                _extract_model, _extract_processor = _mlx_vlm.load(_extract_model_path)
+                _heal_lock = _get_metal_lock()
+                if _heal_lock:
+                    with _heal_lock:
+                        try:
+                            import mlx.core as mx
+                            mx.metal.clear_cache()
+                        except Exception:
+                            pass
+                        _extract_model, _extract_processor = _mlx_vlm.load(_extract_model_path)
+                else:
+                    try:
+                        import mlx.core as mx
+                        mx.metal.clear_cache()
+                    except Exception:
+                        pass
+                    _extract_model, _extract_processor = _mlx_vlm.load(_extract_model_path)
                 _extract_model_has_vision = True
                 logger.info(f"[_handle_vision] self-heal reload complete — vision now enabled")
             except Exception as _heal_err:
