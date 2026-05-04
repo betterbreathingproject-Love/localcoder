@@ -5613,15 +5613,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             }).catch(() => {})
             memoryClient._httpRequest?.('POST', '/memory/session/enrich', { session_id: _sessionId }, 5000).catch(() => {})
           }
-          this.send('qwen-event', {
-            type: 'result',
-            subtype: 'success',
-            is_error: false,
-            result: summary,
-          })
 
           // Extract numbered options from the summary and emit as ask_user
-          // so the renderer shows clickable follow-up buttons
+          // BEFORE the result event (which sets agentFinished=true and blocks further events)
           const optionLines = summary.match(/^\d+\.\s+.+$/gm)
           if (optionLines && optionLines.length >= 2) {
             const options = optionLines.map(l => l.replace(/^\d+\.\s+/, '').trim()).slice(0, 5)
@@ -5631,6 +5625,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               options,
             })
           }
+
+          this.send('qwen-event', {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: summary,
+          })
 
           return
         }
