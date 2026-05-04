@@ -9,6 +9,7 @@ let activeSessionType = 'vibe'
 let conversationHistory = [] // [{role, content, ts}]
 let projectSettings = null  // context settings for active project
 let compactorInstalled = false
+let _globalPromptProgressTimer = null  // hoisted so finishGeneration can clear it
 
 // Sanitize a project path — trim whitespace to prevent trailing-space issues
 // from file pickers (e.g. "photo ranker " vs "photo ranker")
@@ -1557,23 +1558,22 @@ async function sendAgentMode(prompt, opts = {}) {
   // Simulated prompt-eval progress: smoothly animates from 0→90% while waiting
   // for the first token, then jumps to 100% when generation starts.
   function startPromptProgress() {
-    // Always stop any existing timer first to reset cleanly
     if (_promptProgressTimer) { clearInterval(_promptProgressTimer); _promptProgressTimer = null }
     _promptProgress = 0
     let elapsed = 0
-    // Immediately show 0% so the UI resets visually
     updateStatusBar('prompt-eval')
     updateAgentStatsBar({ state: 'prompt-eval', inputTokens, outputTokens: tokenCount, progress: 0, toolCount: _agentToolCount, activity: 'Evaluating prompt...' })
     _promptProgressTimer = setInterval(() => {
       elapsed += 200
-      // Asymptotic curve: approaches 90% but never reaches it
       _promptProgress = 90 * (1 - Math.exp(-elapsed / 8000))
       updateStatusBar('prompt-eval')
       updateAgentStatsBar({ state: 'prompt-eval', inputTokens, outputTokens: tokenCount, progress: _promptProgress, toolCount: _agentToolCount, activity: 'Evaluating prompt...' })
     }, 200)
+    _globalPromptProgressTimer = _promptProgressTimer
   }
   function stopPromptProgress() {
     if (_promptProgressTimer) { clearInterval(_promptProgressTimer); _promptProgressTimer = null }
+    _globalPromptProgressTimer = null
     _promptProgress = null
   }
 
@@ -2935,6 +2935,8 @@ async function teardownActiveAgents() {
 function finishGeneration() {
   isGenerating = false
   window.app.offQwenEvents()  // remove stale event listener to prevent flickering
+  // Stop any lingering prompt progress animation
+  if (_globalPromptProgressTimer) { clearInterval(_globalPromptProgressTimer); _globalPromptProgressTimer = null }
   const btn = document.getElementById('sendBtn')
   btn.disabled=false; btn.textContent='Send ↵'; btn.className='btn-send'; btn.onclick=sendAgent
   updateStatusBar('idle')
