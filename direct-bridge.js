@@ -3160,7 +3160,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // async and inject results here at the start of the next turn.
       if (this._pendingDiagnostics) {
         try {
-          const diagResult = await this._pendingDiagnostics
+          // 10s timeout — don't let a slow LSP scan block the agent
+          const diagResult = await Promise.race([
+            this._pendingDiagnostics,
+            new Promise(r => setTimeout(() => r(null), 10000)),
+          ])
           if (diagResult && diagResult.errors && diagResult.errors.length > 0) {
             const diagLines = diagResult.errors.map(d => `  ${d.severity || 'error'}: ${d.message} (line ${d.line || '?'})`).join('\n')
             messages.push({
