@@ -2955,6 +2955,11 @@ function finishGeneration() {
   window.app.offQwenEvents()  // remove stale event listener to prevent flickering
   // Stop any lingering prompt progress animation
   if (_globalPromptProgressTimer) { clearInterval(_globalPromptProgressTimer); _globalPromptProgressTimer = null }
+  // Stop the todo panel spinner — mark all in_progress items as pending
+  const stoppedTodos = currentTodos.map(t =>
+    t.status === 'in_progress' ? { ...t, status: 'pending' } : t
+  )
+  updateTodoPanel(stoppedTodos, 'done')
   const btn = document.getElementById('sendBtn')
   btn.disabled=false; btn.textContent='Send ↵'; btn.className='btn-send'; btn.onclick=sendAgent
   updateStatusBar('idle')
