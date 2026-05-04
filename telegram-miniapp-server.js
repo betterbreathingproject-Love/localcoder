@@ -456,16 +456,13 @@ class MiniAppServer extends EventEmitter {
     let log = null
 
     if (data.type === 'text-delta') {
-      // Streaming text output — accumulates the full response so far.
-      // Throttle: only log every ~500ms to avoid flooding with hundreds of entries.
+      // Streaming text — throttle to avoid flooding
       const now = Date.now()
       if (this._lastTextDeltaTime && now - this._lastTextDeltaTime < 500) return
       this._lastTextDeltaTime = now
       const text = data.text || data.delta || ''
       if (text) {
-        // Show the tail of the accumulated text as a live preview
-        const preview = text.length > 200 ? '...' + text.slice(-200) : text
-        // Replace the previous text-delta log entry instead of appending
+        const preview = text.length > 300 ? '...' + text.slice(-300) : text
         if (this._lastTextDeltaIdx != null && this._lastTextDeltaIdx < this._logs.length) {
           this._logs[this._lastTextDeltaIdx] = { type: 'log', text: preview, logType: 'info', time: now }
           this._broadcast({ type: 'log', text: preview, logType: 'info', time: now })
@@ -476,13 +473,41 @@ class MiniAppServer extends EventEmitter {
     } else if (data.type === 'assistant' || data.type === 'text') {
       const text = data.content || data.text || ''
       if (text) log = { type: 'log', text, logType: 'info', time: Date.now() }
-    } else if (data.type === 'tool_call' || data.type === 'tool-start') {
-      const input = typeof data.input === 'string' ? data.input : JSON.stringify(data.input || '')
-      log = { type: 'log', text: `🔧 ${data.name || 'tool'}: ${input.substring(0, 80)}`, logType: 'tool', time: Date.now() }
-    } else if (data.type === 'tool_result' || data.type === 'tool-end') {
-      log = { type: 'log', text: `✓ ${data.name || 'tool'} done`, logType: 'result', time: Date.now() }
+
+    // ── Tool execution ──────────────────────────────────────────────────
+    } else if (data.type === 'tool-use' || data.type === 'tool_call' || data.type === 'tool-start') {
+      const name = data.name || 'tool'
+      const args = typeof data.input === 'string' ? data.input : JSON.stringify(data.input || '')
+      // Show useful context: file paths, commands, search queries
+      let detail = ''
+      try {
+        const parsed = typeof data.input === 'object' ? data.input : JSON.parse(args)
+        if (parsed.path) detail = parsed.path
+        else if (parsed.command) detail = parsed.command.slice(0, 120)
+        else if (parsed.pattern) detail = `"${parsed.pattern}"`
+        else if (parsed.query) detail = `"${parsed.query}"`
+        else if (parsed.url) detail = parsed.url.slice(0, 100)
+        else if (parsed.content) detail = `${parsed.content.length} chars`
+        else detail = args.slice(0, 120)
+      } catch { detail = args.slice(0, 120) }
+      log = { type: 'log', text: `🔧 ${name}: ${detail}`, logType: 'tool', time: Date.now() }
+
+    } else if (data.type === 'tool-result' || data.type === 'tool_result') {
+      const content = data.content || ''
+      const isError = data.is_error
+      if (isError) {
+        const errText = typeof content === 'string' ? content.slice(0, 200) : String(content).slice(0, 200)
+        log = { type: 'log', text: `❌ Tool error: ${errText}`, logType: 'error', time: Date.now() }
+      } else {
+        // Show a useful summary of the result
+        const text = typeof content === 'string' ? content : String(content)
+        const preview = text.length > 150 ? text.slice(0, 150) + '…' : text
+        if (preview) log = { type: 'log', text: `✓ ${preview}`, logType: 'result', time: Date.now() }
+      }
+
+    // ── Session lifecycle ────────────────────────────────────────────────
     } else if (data.type === 'session-start') {
-      log = { type: 'log', text: `▶ Agent session started${data.cwd ? ` (${data.cwd})` : ''}`, logType: 'info', time: Date.now() }
+      log = { type: 'log', text: `▶ Agent session started${data.cwd ? ` — ${data.cwd}` : ''}`, logType: 'info', time: Date.now() }
     } else if (data.type === 'session-end' || data.type === 'done' || data.type === 'finish') {
       log = { type: 'log', text: '✅ Job completed', logType: 'result', time: Date.now() }
       this._appendLog(log)
@@ -495,25 +520,71 @@ class MiniAppServer extends EventEmitter {
       this._broadcast(log)
       this._broadcast({ type: 'job_failed', jobId: this._controller.getJobId(), error: data.error || 'Error' })
       return
+
+    // ── Agent results ────────────────────────────────────────────────────
     } else if (data.type === 'result') {
       const text = data.result || data.content || ''
       if (text && text !== '__TASK_COMPLETE__') {
-        log = { type: 'log', text, logType: 'result', time: Date.now() }
+        if (data.is_error) {
+          log = { type: 'log', text: `⚠️ ${text}`, logType: 'error', time: Date.now() }
+        } else {
+          log = { type: 'log', text, logType: 'result', time: Date.now() }
+        }
       }
+
+    // ── Fast assistant events ────────────────────────────────────────────
+    } else if (data.type === 'fast-assist') {
+      const label = data.label || data.task || 'assist'
+      const detail = data.detail || ''
+      log = { type: 'log', text: `${label}${detail ? ': ' + detail : ''}`, logType: 'info', time: Date.now() }
+
+    // ── Todo list ────────────────────────────────────────────────────────
+    } else if (data.type === 'todo-bootstrap') {
+      const todos = data.todos || []
+      if (todos.length > 0) {
+        const list = todos.map(t => `  ${t.status === 'done' ? '✅' : '⬜'} ${t.content || t.id}`).join('\n')
+        log = { type: 'log', text: `📋 Task plan (${todos.length} items):\n${list}`, logType: 'info', time: Date.now() }
+      }
+
+    // ── User injection ───────────────────────────────────────────────────
+    } else if (data.type === 'user-injection') {
+      log = { type: 'log', text: `💬 User: ${data.content || ''}`, logType: 'info', time: Date.now() }
+
+    // ── Long-running command ─────────────────────────────────────────────
+    } else if (data.type === 'bash-waiting') {
+      log = { type: 'log', text: `⏳ Command running (${data.elapsedSecs}s): ${data.command || ''}`, logType: 'tool', time: Date.now() }
+
+    // ── System messages ──────────────────────────────────────────────────
     } else if (data.type === 'system') {
-      // Internal debug/status messages — show non-debug ones
-      if (data.subtype !== 'debug') {
-        const text = data.data || data.content || ''
-        if (text) log = { type: 'log', text, logType: 'info', time: Date.now() }
+      const text = data.data || data.content || ''
+      if (!text) return
+      // Show warnings always, debug only if interesting
+      if (data.subtype === 'warning') {
+        log = { type: 'log', text: `⚠️ ${text}`, logType: 'error', time: Date.now() }
+      } else if (data.subtype === 'debug') {
+        // Filter out noisy debug — only show compaction, memory, retries, errors
+        if (/compact|memory|retry|413|reset|stuck|blocked|unproductive/i.test(text)) {
+          log = { type: 'log', text: `🔍 ${text}`, logType: 'info', time: Date.now() }
+        }
+      } else {
+        log = { type: 'log', text, logType: 'info', time: Date.now() }
       }
+
+    // ── Agent type selection ─────────────────────────────────────────────
     } else if (data.type === 'agent-type') {
       log = { type: 'log', text: `🤖 Agent: ${data.agentType || 'unknown'}`, logType: 'info', time: Date.now() }
+
+    // ── LSP activity ─────────────────────────────────────────────────────
     } else if (data.type === 'lsp-activity') {
       log = { type: 'log', text: `🔍 LSP: ${data.action || 'activity'}${data.count ? ` (${data.count} items)` : ''}`, logType: 'tool', time: Date.now() }
+
+    // ── Compaction ───────────────────────────────────────────────────────
     } else if (data.type === 'compaction-stats') {
-      log = { type: 'log', text: '📦 Context compacted', logType: 'info', time: Date.now() }
+      const s = data.data || {}
+      log = { type: 'log', text: `📦 Context compacted${s.engine ? ` (${s.engine})` : ''}`, logType: 'info', time: Date.now() }
+
+    // ── Ask user ─────────────────────────────────────────────────────────
     } else if (data.type === 'ask-user') {
-      // Agent is asking the user a question — broadcast to mini app and set up reply callback
       const question = data.question || 'Agent needs input'
       const options = data.options || []
       log = { type: 'log', text: `❓ ${question}`, logType: 'info', time: Date.now() }
@@ -528,7 +599,6 @@ class MiniAppServer extends EventEmitter {
       if (data.type === 'text-delta') {
         this._lastTextDeltaIdx = this._logs.length
       } else {
-        // Non-delta event — reset the delta tracker so next delta gets a new entry
         this._lastTextDeltaIdx = null
         this._lastTextDeltaTime = null
       }

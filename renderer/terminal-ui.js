@@ -8,9 +8,11 @@
  * All functions are global (vanilla JS, no framework).
  */
 
-// ── xterm.js imports (loaded from node_modules via require) ───────────────────
-const { Terminal: XTerminal } = require('@xterm/xterm')
-const { FitAddon } = require('@xterm/addon-fit')
+// ── xterm.js globals (loaded via <script> tags in index.html) ─────────────────
+// @xterm/xterm exports Terminal onto globalThis
+// @xterm/addon-fit exports FitAddon onto self.FitAddon
+const XTerminal = window.Terminal
+const XFitAddon = window.FitAddon ? window.FitAddon.FitAddon : null
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _termCollapsed  = false
@@ -136,7 +138,7 @@ function _createShellSession(id, title) {
     allowProposedApi: true,
   })
 
-  const fitAddon = new FitAddon()
+  const fitAddon = new XFitAddon()
   xterm.loadAddon(fitAddon)
   xterm.open(containerEl)
 
