@@ -3046,10 +3046,17 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     let _agentNotes = null  // Persistent thinking notes — survive compaction, re-injected after each compact
 
     // ── Restore agent notes from conversation history (session resume) ────
-    // When resuming a session, scan the messages for the last agent_notes call
-    // and pre-populate _agentNotes so the model has its prior discoveries.
+    // When resuming a session, scan the messages for the last agent_notes.
+    // Notes are saved as system messages with prefix [agent_notes]: in the
+    // conversation history by the renderer.
     for (let mi = messages.length - 1; mi >= 0; mi--) {
       const m = messages[mi]
+      // Check for the persisted [agent_notes]: format
+      if (m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('[agent_notes]:')) {
+        _agentNotes = m.content.slice('[agent_notes]:'.length).trim()
+        break
+      }
+      // Also check for tool_calls format (in case history has them)
       if (m.role === 'assistant' && m.tool_calls) {
         for (const tc of (m.tool_calls || [])) {
           if (tc.function?.name === 'agent_notes') {
@@ -3071,6 +3078,18 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         role: 'system',
         content: `[Your thinking notes from the previous run — use these to avoid re-discovering things]:\n${_agentNotes}`,
       })
+    } else {
+      // Fallback: use the last assistant message (task_complete summary) as context
+      for (let mi = messages.length - 1; mi >= 0; mi--) {
+        const m = messages[mi]
+        if (m.role === 'assistant' && m.content && m.content.length > 100) {
+          messages.push({
+            role: 'system',
+            content: `[Summary from your previous run — do not repeat this work]:\n${m.content.slice(0, 2000)}`,
+          })
+          break
+        }
+      }
     }
     let _bootstrapDone = false  // Track whether todo bootstrap has fired
     let _textOnlyTurns = 0  // Track consecutive text-only responses for safety valve

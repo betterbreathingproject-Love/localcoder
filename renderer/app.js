@@ -1708,6 +1708,13 @@ async function sendAgentMode(prompt, opts = {}) {
         // Agent wrote persistent thinking notes — update the memory bank panel live
         if (typeof ev.notes === 'string') {
           _memRenderNotes(ev.notes, ev.turn)
+          // Persist notes to session history so they survive across runs
+          if (activeProjectId && activeSessionId) {
+            window.app.appendSessionMsg(activeProjectId, activeSessionId, {
+              role: 'system',
+              content: `[agent_notes]: ${ev.notes}`,
+            }).catch(() => {})
+          }
         }
         break
       }
@@ -2211,6 +2218,13 @@ async function sendAgentMode(prompt, opts = {}) {
         hideActivity()
         document.getElementById(respId+'-status').textContent = ev.is_error ? `❌ ${ev.subtype}: ${ev.result||'error'}` : '✅ Done'
         document.getElementById(respId+'-status').style.display = ''
+        // Persist the task_complete summary so the next run has context
+        if (!ev.is_error && ev.result && activeProjectId && activeSessionId) {
+          window.app.appendSessionMsg(activeProjectId, activeSessionId, {
+            role: 'assistant',
+            content: ev.result,
+          }).catch(() => {})
+        }
         if (!agentFinished && !window._pendingTasksExecute) {
           agentFinished = true
           stopPromptProgress()
