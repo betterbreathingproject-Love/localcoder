@@ -6273,6 +6273,12 @@ The project file tree is included at the end of this prompt — read it before c
 ## Progress tracking
 Before starting any multi-step task, call update_todos with all steps as "pending". Mark each "in_progress" when you start it and "done" when complete. Call task_complete when all items are done — this is the ONLY way to end a session.
 
+When calling task_complete, your summary MUST end with 2-3 relevant follow-up questions or suggestions for the user. These should be specific to what was accomplished — not generic. Examples:
+- "Want me to add unit tests for the new GameScene class?"
+- "Should I set up the build pipeline for the simulator?"
+- "The collision detection is basic — want me to add physics-based responses?"
+Frame them as short actionable options the user can pick from.
+
 Use **edit_todos** (not update_todos) when you need to:
 - Add new steps discovered mid-task: edit_todos({"append": [{"content": "New step", "status": "pending"}]})
 - Mark a single item done: edit_todos({"update": [{"id": 3, "status": "done"}]})
