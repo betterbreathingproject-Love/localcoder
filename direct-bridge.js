@@ -3478,7 +3478,10 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           const userPrompt = messages.filter(m => m.role === 'user').pop()?.content || ''
           if (typeof userPrompt === 'string' && userPrompt) {
             try {
-              const todos = await assistClient.assistTodoBootstrap(userPrompt)
+              const todos = await Promise.race([
+                assistClient.assistTodoBootstrap(userPrompt),
+                new Promise(r => setTimeout(() => r(null), 8000)),
+              ])
               if (todos && !_bootstrapDone) {
                 this.send('qwen-event', { type: 'fast-assist', task: 'todo_bootstrap', label: '⚡ Fast Assistant — generated initial todo list', detail: `${todos.length} items` })
                 this.send('qwen-event', { type: 'todo-bootstrap', todos })
