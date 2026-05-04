@@ -2898,6 +2898,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // cold starts with no good matches waste minimal tokens.
       if (memoryClient && !_isOrchestratorTask) {
         try {
+          console.log('[direct-bridge] run() memory retrieval starting, elapsed %dms', Date.now() - _runT0);
           const recallMode = detectRecallMode(prompt)
           const memResult = await memoryClient.retrieve(prompt, {
             mode: recallMode,
@@ -2929,6 +2930,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             }
           }
         } catch (_) { /* memory unavailable — proceed without */ }
+        console.log('[direct-bridge] run() memory retrieval done, elapsed %dms', Date.now() - _runT0);
 
         // ── Session resume brief ──────────────────────────────────────────
         // When conversation history was trimmed (large session), inject a
@@ -2965,6 +2967,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // Gather active diagnostics and inject into context so the agent
       // is aware of existing errors before it starts working
       if (!_isOrchestratorTask && this._lspManager?.getStatus().status === 'ready') {
+        console.log('[direct-bridge] run() LSP diagnostics starting, elapsed %dms', Date.now() - _runT0);
         try {
           // For Swift/Xcode projects, scan .swift files directly — detectEntryPoints
           // returns JS/Python files which sourcekit-lsp doesn't handle.
@@ -3009,6 +3012,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             }
           }
         } catch { /* diagnostics pre-fetch failed — proceed without */ }
+        console.log('[direct-bridge] run() LSP diagnostics done, elapsed %dms', Date.now() - _runT0);
       }
 
       console.log('[direct-bridge] run() entering agentLoop, elapsed %dms', Date.now() - _runT0);
