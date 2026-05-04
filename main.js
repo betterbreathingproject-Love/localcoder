@@ -818,6 +818,19 @@ function createWindow() {
     })
   })
 
+  // ── Telegram plain text → ask_user reply ──
+  // When a job runs via the main app (shared bridge), ask_user uses
+  // WindowInputRequester. Telegram users can also reply by sending
+  // a plain text message — forward it to resolveReply.
+  telegramBot.on('message', ({ chatId, text }) => {
+    if (chatId !== telegramBot.getPairedChatId()) return
+    // Only forward if there's a pending ask_user request
+    if (_windowInputRequester.hasPendingRequest()) {
+      console.log('[telegram→ask_user] forwarding reply:', text?.slice(0, 80))
+      _windowInputRequester.resolveReply(text || '')
+    }
+  })
+
   // ── Telegram IPC handlers ──
   ipcMain.handle('telegram-pair', async () => {
     if (!telegramBot) return { error: 'Bot not initialized' }
@@ -921,6 +934,7 @@ function createWindow() {
           jobController: remoteJobController,
           port: MINIAPP_PORT,
           bridgeStateGetter: () => qwenBridge?._running || false,
+          bridgeGetter: () => qwenBridge,
           onStopJob: () => {
             if (qwenBridge) {
               qwenBridge.interrupt()
@@ -1043,6 +1057,11 @@ function createWindow() {
           },
         })
         miniAppServer.start()
+
+        // ── Wire ask_user reply from mini app → WindowInputRequester ──
+        miniAppServer._inputReplyCallback = (reply) => {
+          _windowInputRequester.resolveReply(reply || '')
+        }
 
         // ── Persistent event bridge: main app → mini app ──────────────────
         // Forward ALL qwen-events and task-status-events to the mini app so

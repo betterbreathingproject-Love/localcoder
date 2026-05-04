@@ -265,6 +265,8 @@ const state = {
   screenshotLoading: false,
   history: [],
   connected: false,
+  pendingQuestion: null,
+  pendingOptions: [],
   // Projects & Sessions
   projects: [],
   projectsLoading: false,
@@ -403,11 +405,15 @@ function handleMessage(msg) {
       break;
     case 'job_completed':
       state.jobState = 'completed';
+      state.pendingQuestion = null;
+      state.pendingOptions = [];
       state.history.unshift({ id: state.jobId, prompt: state.jobPrompt, state: 'completed', time: Date.now() });
       showToast('Job completed ✓');
       break;
     case 'job_failed':
       state.jobState = 'failed';
+      state.pendingQuestion = null;
+      state.pendingOptions = [];
       state.logs.push({ time: Date.now(), text: msg.error || 'Job failed', type: 'error' });
       state.history.unshift({ id: state.jobId, prompt: state.jobPrompt, state: 'failed', time: Date.now() });
       showToast('Job failed');
@@ -417,6 +423,12 @@ function handleMessage(msg) {
       break;
     case 'tool_use':
       state.logs.push({ time: Date.now(), text: `🔧 ${msg.tool}: ${msg.summary || ''}`, type: 'tool' });
+      break;
+    case 'input_request':
+      state.pendingQuestion = msg.question || '';
+      state.pendingOptions = msg.options || [];
+      state.logs.push({ time: Date.now(), text: `❓ Agent asks: ${msg.question}`, type: 'info' });
+      state.tab = 'monitor';
       break;
     case 'screenshot':
       state.screenshot = msg.data; // base64 or URL
@@ -456,6 +468,33 @@ function requestScreenshot() {
 
 function requestStatus() {
   sendCmd('status');
+}
+
+async function injectPrompt(message) {
+  if (!message) return;
+  try {
+    await fetch(getApiBase() + '/api/inject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    showToast('Message sent to agent');
+  } catch { showToast('Failed to send'); }
+}
+
+async function replyToAgent(text) {
+  if (text == null) return;
+  try {
+    await fetch(getApiBase() + '/api/reply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    state.pendingQuestion = null;
+    state.pendingOptions = [];
+    showToast('Reply sent');
+    render();
+  } catch { showToast('Failed to send reply'); }
 }
 
 // ── REST API Helpers ──────────────────────────────────
@@ -633,10 +672,35 @@ function renderMonitorTab() {
       </div>
     </div>`;
 
+  // Ask-user reply UI — shown when agent is waiting for input
+  const askUserSection = state.pendingQuestion ? `
+    <div class="section" style="background:var(--org-bg);border:1px solid rgba(237,137,54,.3);border-radius:var(--r);padding:14px;margin-bottom:12px;">
+      <div class="section-label" style="color:var(--org);">❓ Agent needs your input</div>
+      <div style="font-size:13px;color:var(--txt);margin-bottom:8px;line-height:1.5;">${esc(state.pendingQuestion)}</div>
+      ${state.pendingOptions && state.pendingOptions.length > 0 ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+          ${state.pendingOptions.map(o => `<button class="quick-chip ask-option" data-option="${esc(o)}">${esc(o)}</button>`).join('')}
+        </div>` : ''}
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="ask-reply-input" placeholder="Type your reply..." style="flex:1;padding:10px;border-radius:var(--rs);background:var(--surface);border:1px solid var(--bdr);color:var(--txt);font-size:13px;outline:none;">
+        <button class="btn btn-primary" id="btn-ask-reply" style="width:auto;padding:10px 16px;margin-top:0;">Send</button>
+      </div>
+    </div>` : '';
+
+  // Inject prompt — always visible when job is running
+  const injectSection = state.jobState === 'running' ? `
+    <div class="section">
+      <div class="section-label">💬 Send message to agent</div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="inject-input" placeholder="Nudge the agent, give instructions, or answer a question..." style="flex:1;padding:10px;border-radius:var(--rs);background:var(--surface);border:1px solid var(--bdr);color:var(--txt);font-size:13px;outline:none;">
+        <button class="btn btn-secondary" id="btn-inject" style="width:auto;padding:10px 16px;margin-top:0;border:1px solid var(--acc);color:var(--acc);">Send</button>
+      </div>
+    </div>` : '';
+
   const actions = state.jobState === 'running' ? `
     <button class="btn btn-danger" id="btn-stop">⏹ Stop Job</button>` : '';
 
-  return `<div class="content">${jobCard}${logsHtml}${screenshotSection}${actions}</div>`;
+  return `<div class="content">${jobCard}${askUserSection}${logsHtml}${injectSection}${screenshotSection}${actions}</div>`;
 }
 
 function renderProjectsTab() {
@@ -811,6 +875,35 @@ function bindEvents() {
   if (btnStop) btnStop.onclick = stopJob;
   const btnScreenshot = document.getElementById('btn-screenshot');
   if (btnScreenshot) btnScreenshot.onclick = requestScreenshot;
+
+  // Inject prompt
+  const btnInject = document.getElementById('btn-inject');
+  const injectInput = document.getElementById('inject-input');
+  if (btnInject && injectInput) {
+    const doInject = () => {
+      const msg = injectInput.value.trim();
+      if (msg) { injectPrompt(msg); injectInput.value = ''; }
+    };
+    btnInject.onclick = doInject;
+    injectInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doInject(); } };
+  }
+
+  // Ask-user reply
+  const btnAskReply = document.getElementById('btn-ask-reply');
+  const askReplyInput = document.getElementById('ask-reply-input');
+  if (btnAskReply && askReplyInput) {
+    const doReply = () => {
+      const text = askReplyInput.value.trim();
+      if (text) { replyToAgent(text); askReplyInput.value = ''; }
+    };
+    btnAskReply.onclick = doReply;
+    askReplyInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doReply(); } };
+  }
+  // Ask-user option buttons
+  document.querySelectorAll('.ask-option').forEach(el => {
+    el.onclick = () => { replyToAgent(el.dataset.option); };
+  });
+
   // Auto-scroll log
   const logContainer = document.getElementById('log-container');
   if (logContainer) logContainer.scrollTop = logContainer.scrollHeight;

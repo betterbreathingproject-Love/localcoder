@@ -262,6 +262,21 @@ class RemoteJobController extends EventEmitter {
         }
         break
       }
+      case 'inject': {
+        // /inject <message> — inject a prompt into the running agent
+        if (!args || !args.trim()) {
+          await this._bot.sendMessage(this._chatId, 'Usage: /inject <message>')
+          return
+        }
+        const bridge = this._sharedBridge || this._bridge
+        if (bridge && typeof bridge.inject === 'function') {
+          bridge.inject(args.trim())
+          await this._bot.sendMessage(this._chatId, `💬 Injected: ${args.trim().slice(0, 100)}`)
+        } else {
+          await this._bot.sendMessage(this._chatId, 'No agent is running to inject into.')
+        }
+        break
+      }
       case 'spec': {
         // /spec [name] — list available specs or run a specific spec by name
         if (!this._specRunner) {
@@ -299,10 +314,13 @@ class RemoteJobController extends EventEmitter {
           '/run <prompt> — run an agent job',
           '/stop — stop the current job',
           '/status — check job status',
+          '/inject <message> — send a message to the running agent',
           '/spec — list available specs',
           '/spec <name> — run a spec',
           '/screenshot — take a browser screenshot',
           '/app — open the mini app',
+          '',
+          '💬 Plain text messages reply to agent questions (ask_user).',
         ].join('\n')
         await this._bot.sendMessage(this._chatId, helpText)
         break

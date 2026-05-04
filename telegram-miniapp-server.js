@@ -19,13 +19,15 @@ class MiniAppServer extends EventEmitter {
    * @param {function} [opts.onRunJob] - Callback to actually run an agent job: (prompt) => void
    * @param {function} [opts.onStopJob] - Callback to stop the running agent job: () => void
    */
-  constructor({ jobController, port = 3847, onRunJob, onStopJob, bridgeStateGetter }) {
+  constructor({ jobController, port = 3847, onRunJob, onStopJob, bridgeStateGetter, bridgeGetter }) {
     super()
     this._controller = jobController
     this._port = port
     this._onRunJob = onRunJob || null
     this._onStopJob = onStopJob || null
     this._bridgeStateGetter = bridgeStateGetter || null
+    this._bridgeGetter = bridgeGetter || null
+    this._inputReplyCallback = null
     this._server = null
     this._wss = null
     this._clients = new Set()
@@ -250,6 +252,28 @@ class MiniAppServer extends EventEmitter {
       return
     }
 
+    // POST /api/inject — inject a prompt into the running agent
+    if (req.method === 'POST' && pathname === '/api/inject') {
+      this._parseBody(req).then((body) => {
+        if (!body.message) { res.writeHead(400); res.end('{"error":"message required"}'); return }
+        this._handleClientMessage({ type: 'inject', message: body.message })
+        res.writeHead(200)
+        res.end(JSON.stringify({ ok: true }))
+      }).catch(() => { res.writeHead(400); res.end('{"error":"Invalid body"}') })
+      return
+    }
+
+    // POST /api/reply — reply to a pending ask_user question
+    if (req.method === 'POST' && pathname === '/api/reply') {
+      this._parseBody(req).then((body) => {
+        if (body.text == null) { res.writeHead(400); res.end('{"error":"text required"}'); return }
+        this._handleClientMessage({ type: 'reply', text: body.text })
+        res.writeHead(200)
+        res.end(JSON.stringify({ ok: true }))
+      }).catch(() => { res.writeHead(400); res.end('{"error":"Invalid body"}') })
+      return
+    }
+
     res.writeHead(404)
     res.end('{"error":"Not found"}')
   }
@@ -330,6 +354,29 @@ class MiniAppServer extends EventEmitter {
         break
       case 'screenshot':
         this._controller.handleCommand('screenshot', '')
+        break
+      case 'inject':
+        // Inject a prompt into the running agent at the next turn boundary
+        if (msg.message) {
+          const bridge = this._bridgeGetter ? this._bridgeGetter() : null
+          if (bridge && typeof bridge.inject === 'function') {
+            bridge.inject(msg.message)
+            const log = { type: 'log', text: `💬 Injected: ${msg.message.slice(0, 100)}`, logType: 'info', time: Date.now() }
+            this._appendLog(log)
+            this._broadcast(log)
+          }
+        }
+        break
+      case 'reply':
+        // Reply to a pending ask_user question
+        if (msg.text != null) {
+          if (this._inputReplyCallback) {
+            this._inputReplyCallback(msg.text)
+            const log = { type: 'log', text: `✏️ Replied: ${String(msg.text).slice(0, 100)}`, logType: 'info', time: Date.now() }
+            this._appendLog(log)
+            this._broadcast(log)
+          }
+        }
         break
     }
   }
@@ -465,6 +512,15 @@ class MiniAppServer extends EventEmitter {
       log = { type: 'log', text: `🔍 LSP: ${data.action || 'activity'}${data.count ? ` (${data.count} items)` : ''}`, logType: 'tool', time: Date.now() }
     } else if (data.type === 'compaction-stats') {
       log = { type: 'log', text: '📦 Context compacted', logType: 'info', time: Date.now() }
+    } else if (data.type === 'ask-user') {
+      // Agent is asking the user a question — broadcast to mini app and set up reply callback
+      const question = data.question || 'Agent needs input'
+      const options = data.options || []
+      log = { type: 'log', text: `❓ ${question}`, logType: 'info', time: Date.now() }
+      this._appendLog(log)
+      this._broadcast(log)
+      this._broadcast({ type: 'input_request', question, options, time: Date.now() })
+      return
     }
 
     if (log) {
