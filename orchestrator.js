@@ -687,9 +687,14 @@ class Orchestrator extends EventEmitter {
     const attempts = this._retryCount.get(nodeId) || 0;
 
     // ── Tier 1: Transient errors — retry up to 3x with backoff ──────────────
+    // For server crashes (ECONNREFUSED/ECONNRESET), use longer delays since
+    // SIGABRT recovery requires 6s cooldown + server restart + model reload.
     if (isTransient && attempts < 3) {
       this._retryCount.set(nodeId, attempts + 1);
-      const retryDelay = attempts === 0 ? 10000 : 30000;
+      const isServerDown = /ECONNREFUSED|ECONNRESET|No model loaded|model not loaded/i.test(errMsg);
+      const retryDelay = isServerDown
+        ? (attempts === 0 ? 20000 : 40000)  // server crash: 20s first, 40s after
+        : (attempts === 0 ? 10000 : 30000); // other transient: 10s first, 30s after
       this.emit('task-error', { nodeId, error: `${errMsg} (retrying ${attempts + 1}/3 in ${retryDelay / 1000}s...)` });
       setTimeout(async () => {
         if (this._state !== 'running') return;

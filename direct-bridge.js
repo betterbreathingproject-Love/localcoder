@@ -3595,11 +3595,14 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             // Backoff schedule designed to survive a full crash+restart+model-reload cycle:
             // attempt 0→1: 5s, 1→2: 8s, 2→3: 12s, 3→4: 15s, 4→5: 20s, 5→6: 25s, 6→7: 30s
             // Total max wait: ~115s — enough for 5s crash delay + server start + model reload
-            // For ECONNREFUSED (server down), also poll for model readiness instead
-            // of blind backoff — the server may take variable time to restart + reload
-            if (code === 'ECONNREFUSED' && attempt >= 1) {
-              this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Server down (ECONNREFUSED) — waiting for model to be ready... (${attempt + 1}/7)` })
-              const modelReady = await this._waitForModelReady(60)
+            // For ECONNREFUSED/ECONNRESET (server down or crashed mid-stream),
+            // poll for model readiness instead of blind backoff — the server may
+            // take variable time to restart + reload. This applies from attempt 0
+            // since SIGABRT recovery (6s cooldown + server start + model reload)
+            // always exceeds the initial 5s backoff.
+            if (code === 'ECONNREFUSED' || code === 'ECONNRESET') {
+              this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Server ${code === 'ECONNREFUSED' ? 'down' : 'crashed mid-stream'} (${code}) — waiting for model to be ready... (${attempt + 1}/7)` })
+              const modelReady = await this._waitForModelReady(90)
               if (this._aborted) return
               if (modelReady) {
                 const jitter = Math.floor(Math.random() * 3000)
