@@ -2934,6 +2934,7 @@ async function teardownActiveAgents() {
 
 function finishGeneration() {
   isGenerating = false
+  window.app.offQwenEvents()  // remove stale event listener to prevent flickering
   const btn = document.getElementById('sendBtn')
   btn.disabled=false; btn.textContent='Send ↵'; btn.className='btn-send'; btn.onclick=sendAgent
   updateStatusBar('idle')
