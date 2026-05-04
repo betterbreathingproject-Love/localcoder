@@ -184,22 +184,6 @@ function startServer(port, appDir, mainWindow) {
       mainWindow?.webContents.send('server-log', `⚠️ Server exited (${reason}) — restarting in ${restartDelay / 1000}s...`)
       mainWindow?.webContents.send('server-crashed', { reason, willRestart: true })
 
-      // Send the last stderr lines to the renderer so crash diagnostics
-      // are visible in the app terminal without checking crash.log
-      const crashLines = _lastStderr.slice(-20)
-      if (crashLines.length > 0) {
-        // Filter for the most useful lines — Metal traces, errors, memory info
-        const diagnosticLines = crashLines.filter(l =>
-          /metal-trace|SIGABRT|SIGSEGV|❌|⚠️|Metal memory|error|crash|abort|fatal/i.test(l)
-        )
-        const linesToShow = diagnosticLines.length > 0 ? diagnosticLines : crashLines.slice(-10)
-        mainWindow?.webContents.send('server-log', `── Crash diagnostics (last ${linesToShow.length} relevant lines) ──`)
-        for (const line of linesToShow) {
-          mainWindow?.webContents.send('server-log', `  ${line}`)
-        }
-        mainWindow?.webContents.send('server-log', `── Full crash log: ~/.qwencoder/crash.log ──`)
-      }
-
       // Wait for Metal/GPU memory to be fully released before restarting.
       // A SIGSEGV from MLX leaves GPU memory in an undefined state — starting
       // too quickly causes an immediate second crash.

@@ -127,20 +127,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   })
 
-  // Surface server crash diagnostics in the app terminal so the user
-  // can see what happened without checking ~/.qwencoder/crash.log
-  window.app.onServerLog?.((line) => {
-    if (typeof line === 'string' && /crash diagnostic|metal-trace|── Crash|── Full crash/i.test(line)) {
-      // Show crash-related server logs inline in the agent output
-      const out = document.getElementById('agentOutput')
-      if (out) {
-        out.insertAdjacentHTML('beforeend',
-          `<div class="msg-system" style="color:var(--red,#f87171);font-size:11px;padding:2px 12px;font-family:monospace;white-space:pre-wrap">${esc(line)}</div>`)
-        scrollOutput()
-      }
-    }
-  })
-
   // Refresh extraction model section when the background fast-model load completes
   window.app.onFastModelStatus?.((s) => {
     if (s.loaded) {
