@@ -3326,13 +3326,12 @@ async function loadOpenRouterSettings() {
     const fields = document.getElementById('or-fields')
     if (checkbox) checkbox.checked = enabled
     if (fields) fields.style.display = enabled ? '' : 'none'
-    if (enabled) {
-      const keyEl = document.getElementById('or-apikey')
-      const modelEl = document.getElementById('or-model')
-      if (keyEl && settings.openrouterApiKey) keyEl.value = settings.openrouterApiKey
-      if (modelEl && settings.openrouterModel) modelEl.value = settings.openrouterModel
-      _updateOpenRouterStatus(settings)
-    }
+    // Always populate saved values so they're visible when the user re-enables
+    const keyEl = document.getElementById('or-apikey')
+    const modelEl = document.getElementById('or-model')
+    if (keyEl && settings.openrouterApiKey) keyEl.value = settings.openrouterApiKey
+    if (modelEl && settings.openrouterModel) modelEl.value = settings.openrouterModel
+    _updateOpenRouterStatus(settings)
     _updateOpenRouterBadge(settings)
   } catch (_) {}
 }
@@ -3352,6 +3351,7 @@ async function saveOpenRouterSettings() {
     openrouterModel: model,
   }
   await window.app.saveAppSettings(settings)
+  // Always update status and badge regardless of enabled state
   _updateOpenRouterStatus(settings)
   _updateOpenRouterBadge(settings)
 }

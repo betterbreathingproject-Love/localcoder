@@ -2655,28 +2655,35 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             let _chatAccumulated = ''
             await new Promise((resolve, reject) => {
               // ── OpenRouter routing for chat mode ──────────────────────────
-              let chatUrl = `${SERVER_URL}/v1/chat/completions`
-              let chatHeaders = {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(body),
-              }
-              let chatTransport = http
+              // Try OpenRouter first; any failure falls through to local server.
               try {
                 const { getAppSettings } = require('./projects')
                 const appSettings = getAppSettings()
                 if (appSettings.provider === 'openrouter' && appSettings.openrouterApiKey) {
-                  chatUrl = OPENROUTER_CHAT_URL
-                  chatHeaders['Authorization'] = `Bearer ${appSettings.openrouterApiKey}`
-                  chatHeaders['HTTP-Referer'] = 'https://github.com/qwencoder-mac-studio'
-                  chatHeaders['X-Title'] = 'QwenCoder Mac Studio'
-                  chatTransport = require('https')
-                  // Rebuild body with the configured model
-                  const chatBody = JSON.parse(body)
-                  if (appSettings.openrouterModel) chatBody.model = appSettings.openrouterModel
-                  delete chatBody.repetition_penalty
-                  const newBody = JSON.stringify(chatBody)
-                  chatHeaders['Content-Length'] = Buffer.byteLength(newBody)
-                  const r = chatTransport.request(chatUrl, { method: 'POST', headers: chatHeaders, timeout: 120000 }, (res) => {
+                  const orBody = JSON.parse(body)
+                  if (appSettings.openrouterModel) orBody.model = appSettings.openrouterModel
+                  delete orBody.repetition_penalty
+                  const orBodyStr = JSON.stringify(orBody)
+                  // Build headers fresh — never share with the local fallback path
+                  const orHeaders = {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(orBodyStr),
+                    'Authorization': `Bearer ${appSettings.openrouterApiKey}`,
+                    'HTTP-Referer': 'https://github.com/qwencoder-mac-studio',
+                    'X-Title': 'QwenCoder Mac Studio',
+                  }
+                  const https = require('https')
+                  const r = https.request(OPENROUTER_CHAT_URL, { method: 'POST', headers: orHeaders, timeout: 120000 }, (res) => {
+                    if (res.statusCode && res.statusCode >= 400) {
+                      let errBody = ''
+                      res.on('data', c => { errBody += c })
+                      res.on('end', () => {
+                        let errMsg = `OpenRouter HTTP ${res.statusCode}`
+                        try { const p = JSON.parse(errBody); errMsg = p.error?.message || p.detail || errMsg } catch {}
+                        reject(new Error(errMsg))
+                      })
+                      return
+                    }
                     let buf = ''
                     res.on('data', chunk => {
                       if (this._aborted) { r.destroy(); return }
@@ -2693,7 +2700,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                               _chatAccumulated = (_chatAccumulated || '') + delta
                               this.send('qwen-event', { type: 'text-delta', text: _chatAccumulated })
                             }
-                          } catch { /* skip */ }
+                          } catch { /* skip malformed SSE line */ }
                         }
                       }
                     })
@@ -2701,18 +2708,23 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                     res.on('error', reject)
                   })
                   r.on('error', reject)
-                  r.on('timeout', () => { r.destroy(); reject(new Error('Request timed out')) })
-                  r.write(newBody)
+                  r.on('timeout', () => { r.destroy(); reject(new Error('OpenRouter request timed out')) })
+                  r.write(orBodyStr)
                   r.end()
                   this._currentReq = r
                   return
                 }
-              } catch (_) { /* fall through to local */ }
-              const r = chatTransport.request({
+              } catch (_) { /* projects unavailable — fall through to local server */ }
+              // ── Local MLX server ──────────────────────────────────────────
+              const localHeaders = {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+              }
+              const r = http.request({
                 hostname: '127.0.0.1', port: SERVER_PORT,
                 path: '/v1/chat/completions', method: 'POST',
                 timeout: 120000,
-                headers: chatHeaders,
+                headers: localHeaders,
               }, (res) => {
                 let buf = ''
                 res.on('data', chunk => {
