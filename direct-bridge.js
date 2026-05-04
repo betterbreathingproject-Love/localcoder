@@ -6138,12 +6138,22 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         '  3. After each file change, check LSP diagnostics in the tool result. Fix any errors before continuing.\n' +
         '  4. Verify with bash (run tests, check syntax, start the app).\n' +
         'CRITICAL: Do NOT read all project files before starting. If you need file paths, use list_dir — do NOT read file contents just to learn what files exist.\n' +
-        'Constraint: each write_file call should be under 300 lines for source code. Generated config files (pbxproj, Package.swift, CMakeLists) can be longer.',
+        'Constraint: each write_file call should be under 300 lines for source code. Generated config files (pbxproj, Package.swift, CMakeLists) can be longer.\n' +
+        '\n' +
+        '## iOS/Xcode build verification:\n' +
+        'Before running xcodebuild or xcode_build_run_simulator(), run: bash({command: "xcrun simctl list runtimes 2>&1"})\n' +
+        'If no iOS runtime is listed, STOP trying to build for simulator. Tell the user: "No iOS simulator runtime installed. Run: xcodebuild -downloadPlatform iOS"\n' +
+        'Do NOT retry xcode_setup_project() or xcodebuild if simulators are unavailable — it will loop forever. Mark the build verification step as blocked and move on.',
 
       'general':
         'You are a general-purpose coding assistant. Complete the task using whatever tools are appropriate.\n' +
         'For CREATING new files: use write_file immediately — do not read existing files unless you need specific content from them.\n' +
-        'For EDITING existing files: read the target file first, then edit. Verify after changing. Use tools — never output code as text.',
+        'For EDITING existing files: read the target file first, then edit. Verify after changing. Use tools — never output code as text.\n' +
+        '\n' +
+        '## iOS/Xcode build verification:\n' +
+        'Before running xcodebuild or xcode_build_run_simulator(), run: bash({command: "xcrun simctl list runtimes 2>&1"})\n' +
+        'If no iOS runtime is listed, STOP. Tell the user: "No iOS simulator runtime installed. Run: xcodebuild -downloadPlatform iOS"\n' +
+        'Do NOT retry if simulators are unavailable — it will loop forever.',
     }
     const rolePreamble = rolePreambles[this._agentRole] || rolePreambles['general']
 
