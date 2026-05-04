@@ -1676,17 +1676,17 @@ async function sendAgentMode(prompt, opts = {}) {
         break
       }
       case 'progress-summary': {
-        // Show a visible progress update from the fast model
-        const out = document.getElementById('agentOutput')
-        if (out) {
+        // Show progress inline in the tool flow, not at the bottom
+        const toolsEl = document.getElementById(respId + '-tools')
+        if (toolsEl) {
           const todoInfo = ev.todos && ev.todos.length > 0
             ? (() => {
                 const done = ev.todos.filter(t => t.status === 'done' || t.status === 'completed').length
                 return ` (${done}/${ev.todos.length} tasks done)`
               })()
             : ''
-          out.insertAdjacentHTML('beforeend',
-            `<div class="msg-system" style="border-left:2px solid var(--accent,#7c6af7);padding:6px 12px;margin:8px 0;font-size:12px">
+          toolsEl.insertAdjacentHTML('beforeend',
+            `<div class="msg-system" style="border-left:2px solid var(--accent,#7c6af7);padding:6px 12px;margin:6px 0;font-size:12px">
               <span style="color:var(--accent,#7c6af7);font-weight:500">📊 Progress${todoInfo}</span>
               <div style="margin-top:4px;color:var(--fg2,#aaa)">${esc(ev.summary)}</div>
             </div>`)
@@ -5003,16 +5003,18 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         break
       }
       case 'progress-summary': {
-        const out = document.getElementById('agentOutput')
-        if (out) {
+        // Insert inline in the current task block's tools area
+        const orchToolsEl = orchTaskBlockId ? document.getElementById(orchTaskBlockId + '-tools') : null
+        const targetEl = orchToolsEl || document.getElementById('agentOutput')
+        if (targetEl) {
           const todoInfo = ev.todos && ev.todos.length > 0
             ? (() => {
                 const done = ev.todos.filter(t => t.status === 'done' || t.status === 'completed').length
                 return ` (${done}/${ev.todos.length} tasks done)`
               })()
             : ''
-          out.insertAdjacentHTML('beforeend',
-            `<div class="msg-system" style="border-left:2px solid var(--accent,#7c6af7);padding:6px 12px;margin:8px 0;font-size:12px">
+          targetEl.insertAdjacentHTML('beforeend',
+            `<div class="msg-system" style="border-left:2px solid var(--accent,#7c6af7);padding:6px 12px;margin:6px 0;font-size:12px">
               <span style="color:var(--accent,#7c6af7);font-weight:500">📊 Progress${todoInfo}</span>
               <div style="margin-top:4px;color:var(--fg2,#aaa)">${esc(ev.summary)}</div>
             </div>`)
