@@ -310,6 +310,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .msg-text { font-size: 13px; line-height: 1.6; color: #d4d4d8; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; }
 .msg-text p, .msg-text br + br { margin: 0; }
 .msg-text > br:first-child { display: none; }
+.msg-text-inline { padding: 8px 12px; margin: 6px 0; border-left: 2px solid rgba(124,106,247,0.3); border-radius: 0 6px 6px 0; background: rgba(124,106,247,0.04); }
 
 /* Fast model instant reply — shown before the main agent starts */
 .fast-reply { display: block; color: #a78bfa; font-size: 12.5px; font-style: italic; opacity: 0.85; margin-bottom: 6px; }

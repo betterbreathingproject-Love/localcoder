@@ -1493,7 +1493,7 @@ async function sendAgentMode(prompt, opts = {}) {
       <summary>🧠 Thinking</summary>
       <div class="msg-thinking-body" id="${respId}-think-body"></div>
     </details>
-    <div class="msg-text" id="${respId}-text"></div>
+    <div class="msg-text" id="${respId}-text" style="display:none"></div>
     <div class="msg-activity" id="${respId}-activity">🤖 Agent starting in ${esc(currentProject)}... <span class="activity-dot">●</span></div>
   </div>`)
   _userScrolledUp = false  // reset scroll lock for new agent run
@@ -1594,17 +1594,37 @@ async function sendAgentMode(prompt, opts = {}) {
   }
 
   // Debounced markdown rendering — avoids O(n²) re-render on every delta
-  // Debounced markdown rendering — avoids O(n²) re-render on every delta
+  // Text segments are rendered inline in the tools area so they interleave
+  // with tool blocks, creating a conversational flow like Kiro.
   let _mdRenderTimer = null
   let _mdDirty = false
+  let _currentTextSegId = null  // ID of the current inline text segment div
+  let _textSegCount = 0
+
+  function _ensureTextSegment() {
+    if (_currentTextSegId) return _currentTextSegId
+    _textSegCount++
+    _currentTextSegId = respId + '-textseg-' + _textSegCount
+    const toolsEl = document.getElementById(respId + '-tools')
+    if (toolsEl) {
+      toolsEl.insertAdjacentHTML('beforeend',
+        `<div class="msg-text msg-text-inline" id="${_currentTextSegId}"></div>`)
+    }
+    return _currentTextSegId
+  }
+
   function scheduleRender() {
     _mdDirty = true
-    if (_mdRenderTimer) return // already scheduled
+    if (_mdRenderTimer) return
     _mdRenderTimer = requestAnimationFrame(() => {
       _mdRenderTimer = null
       if (_mdDirty) {
         _mdDirty = false
-        document.getElementById(respId+'-text').innerHTML = renderMd(lastText, true) + '<span class="cursor">▌</span>'
+        const segId = _ensureTextSegment()
+        const el = document.getElementById(segId)
+        if (el) {
+          el.innerHTML = renderMd(lastText, true) + '<span class="cursor">▌</span>'
+        }
         scrollOutput()
       }
     })
@@ -1923,6 +1943,22 @@ async function sendAgentMode(prompt, opts = {}) {
         // Start a new text segment for the next turn after this tool call
         allTextSegments.push('')
 
+        // Finalize the current text segment (remove cursor, reset for next segment)
+        if (_currentTextSegId) {
+          const prevSeg = document.getElementById(_currentTextSegId)
+          if (prevSeg) {
+            // Remove cursor and render final markdown
+            const segText = allTextSegments[allTextSegments.length - 2] || ''
+            if (segText.trim()) {
+              prevSeg.innerHTML = renderMd(segText, false)
+            } else {
+              prevSeg.remove()  // remove empty segments
+            }
+          }
+          _currentTextSegId = null  // next text-delta creates a new segment
+        }
+        lastText = ''  // reset for next text segment
+
         // Route update_todos to the todo panel instead of showing a tool block
         if (ev.name === 'update_todos' && ev.input?.todos) {
           // Map status values to what updateTodoPanel expects
@@ -2211,13 +2247,28 @@ async function sendAgentMode(prompt, opts = {}) {
         // Reset role dropdown back to general so next message starts fresh
         _currentAgentType = null
         { const sel = document.getElementById('roleSelect'); if (sel) sel.value = 'general' }
-        // Combine all text segments from every turn (text→tool→text→...)
+
+        // Finalize the last inline text segment
+        if (_currentTextSegId) {
+          const lastSeg = document.getElementById(_currentTextSegId)
+          if (lastSeg && lastText.trim()) {
+            lastSeg.innerHTML = renderMd(lastText, false)
+          } else if (lastSeg) {
+            lastSeg.remove()
+          }
+          _currentTextSegId = null
+        }
+
+        // Combine all text segments for history/snapshot (keep the old div hidden)
         const fullText = allTextSegments.filter(Boolean).join('\n\n')
         const textEl = document.getElementById(respId+'-text')
         if (textEl) textEl.innerHTML = renderMd(fullText)
+
         // If the agent's text ends with a numbered list (looks like options),
         // inject clickable quick-reply chips so the user can respond easily.
-        if (textEl) _injectQuickReplyChips(textEl, fullText)
+        // Find the last visible text segment for chip injection
+        const lastVisibleSeg = document.getElementById(respId + '-tools')?.querySelector('.msg-text-inline:last-of-type')
+        if (lastVisibleSeg) _injectQuickReplyChips(lastVisibleSeg, fullText)
         // Finalize thinking box with extracted content
         const finalThink = extractThinking(fullText)
         const tb = document.getElementById(respId+'-think-body')
