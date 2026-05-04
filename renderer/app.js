@@ -64,8 +64,27 @@ function showToast(message, type = 'info', duration = 5000) {
   }, duration)
 }
 
+// ── theme management ──────────────────────────────────────────────────────────
+function setAppTheme(name) {
+  if (name === 'default') {
+    document.documentElement.removeAttribute('data-theme')
+  } else {
+    document.documentElement.setAttribute('data-theme', name)
+  }
+  try { localStorage.setItem('qwc-theme', name) } catch (_) {}
+  const sel = document.getElementById('themeSelect')
+  if (sel && sel.value !== name) sel.value = name
+}
+
+function _initTheme() {
+  const saved = localStorage.getItem('qwc-theme') || 'default'
+  setAppTheme(saved)
+}
+
 // ── init ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
+  // Restore saved theme before anything paints
+  _initTheme()
   // Inject undo panel into DOM
   _initUndoPanel()
 

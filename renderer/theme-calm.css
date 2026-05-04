@@ -1,0 +1,665 @@
+/* ══════════════════════════════════════════════════════════════════════════════
+   QwenCoder Mac Studio — Calm Theme
+   A softer, more serene take on the default dark palette.
+   Activated by adding `data-theme="calm"` to <html>.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Core palette override ─────────────────────────────────────────────────── */
+[data-theme="calm"] {
+  --bg:      #141419;
+  --bg2:     #1a1a21;
+  --bg3:     #212129;
+  --border:  #2a2a33;
+  --accent:  #6e6bbd;
+  --accent2: #9b94d4;
+  --green:   #6ec89b;
+  --red:     #d47b7b;
+  --yellow:  #d4c47b;
+  --blue:    #7baed4;
+  --text:    #d0d0d8;
+  --muted:   #6b6b78;
+  --radius:  10px;
+}
+
+/* ── Global softening ──────────────────────────────────────────────────────── */
+[data-theme="calm"] body {
+  font-weight: 300;
+  letter-spacing: 0.01em;
+}
+
+/* ── Titlebar — quieter glass ──────────────────────────────────────────────── */
+[data-theme="calm"] .titlebar {
+  background: rgba(20, 20, 25, 0.88);
+  backdrop-filter: blur(28px);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .titlebar-title {
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+/* ── Activity bar — softer icons ───────────────────────────────────────────── */
+[data-theme="calm"] .activity-bar {
+  background: rgba(18, 18, 23, 0.92);
+  border-right: 1px solid rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .ab-btn {
+  opacity: 0.4;
+  transition: all 0.2s ease;
+}
+[data-theme="calm"] .ab-btn:hover {
+  opacity: 0.65;
+  background: rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .ab-btn.active {
+  opacity: 0.85;
+  background: rgba(110, 107, 189, 0.1);
+}
+
+/* ── Sidebar — muted surface ───────────────────────────────────────────────── */
+[data-theme="calm"] .sidebar {
+  background: rgba(22, 22, 29, 0.92);
+  border-right: 1px solid rgba(255,255,255,0.03);
+}
+
+/* ── Editor tabs — gentler contrast ────────────────────────────────────────── */
+[data-theme="calm"] .editor-tabs {
+  background: rgba(22, 22, 29, 0.88);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .ed-tab {
+  color: var(--muted);
+  transition: color 0.2s, background 0.2s;
+}
+[data-theme="calm"] .ed-tab:hover:not(.active) {
+  color: var(--text);
+  background: rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .ed-tab.active {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-bottom: 1px solid var(--bg);
+}
+
+/* ── Buttons — softer fills ────────────────────────────────────────────────── */
+[data-theme="calm"] .btn-primary {
+  background: var(--accent);
+  border-radius: 9px;
+  font-weight: 500;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+[data-theme="calm"] .btn-primary:hover:not(:disabled) {
+  background: var(--accent2);
+  box-shadow: 0 2px 12px rgba(110, 107, 189, 0.2);
+}
+[data-theme="calm"] .btn-send {
+  border-radius: 10px;
+  background: var(--accent);
+  transition: all 0.2s ease;
+}
+[data-theme="calm"] .btn-send:hover:not(:disabled) {
+  background: var(--accent2);
+  box-shadow: 0 3px 14px rgba(110, 107, 189, 0.25);
+  transform: translateY(-1px);
+}
+[data-theme="calm"] .btn-sm {
+  border-radius: 6px;
+  background: var(--accent);
+  transition: background 0.2s;
+}
+
+/* ── Chat panel — serene glass ─────────────────────────────────────────────── */
+[data-theme="calm"] .chat-panel {
+  background: var(--bg);
+  border-left: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .chat-panel .session-bar {
+  background: rgba(22, 22, 29, 0.82);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .chat-panel .model-switcher-bar {
+  background: rgba(22, 22, 29, 0.55);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .chat-panel .agent-input-area {
+  background: rgba(22, 22, 29, 0.82);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .chat-panel .agent-stats {
+  background: rgba(22, 22, 29, 0.65);
+  border-top: 1px solid rgba(255,255,255,0.03);
+}
+
+/* ── Input wrap — softer focus ring ────────────────────────────────────────── */
+[data-theme="calm"] .input-wrap {
+  background: rgba(20, 20, 26, 0.75);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+[data-theme="calm"] .input-wrap:focus-within {
+  border-color: rgba(110, 107, 189, 0.4);
+  box-shadow: 0 0 0 3px rgba(110, 107, 189, 0.08);
+}
+
+/* ── Message blocks — gentler tones ────────────────────────────────────────── */
+[data-theme="calm"] .msg-user {
+  background: rgba(110, 107, 189, 0.06);
+  border: 1px solid rgba(110, 107, 189, 0.1);
+  border-radius: 12px;
+}
+[data-theme="calm"] .msg-text {
+  color: #c8c8d2;
+  line-height: 1.65;
+}
+[data-theme="calm"] .msg-system {
+  color: var(--muted);
+  background: rgba(255,255,255,0.015);
+}
+
+/* ── Tool blocks — quieter borders ─────────────────────────────────────────── */
+[data-theme="calm"] .tool-block {
+  background: var(--bg2);
+  border: 1px solid rgba(123, 174, 212, 0.1);
+  border-radius: 10px;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+[data-theme="calm"] .tool-block:hover {
+  border-color: rgba(123, 174, 212, 0.2);
+  box-shadow: 0 0 0 1px rgba(123, 174, 212, 0.05);
+}
+[data-theme="calm"] .tool-block.done {
+  border-color: rgba(110, 200, 155, 0.15);
+}
+[data-theme="calm"] .tool-block.error {
+  border-color: rgba(212, 123, 123, 0.15);
+}
+
+/* ── Code blocks — softer background ───────────────────────────────────────── */
+[data-theme="calm"] .code-block {
+  background: #0e0e13;
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 10px;
+}
+[data-theme="calm"] .code-header {
+  background: #151519;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .code-block code {
+  color: #b8bcc8;
+}
+[data-theme="calm"] .inline-code {
+  background: rgba(255,255,255,0.05);
+  color: var(--accent2);
+}
+
+/* ── Thinking section — warmer muted tone ──────────────────────────────────── */
+[data-theme="calm"] .msg-thinking {
+  border: 1px solid rgba(212, 196, 123, 0.08);
+  background: rgba(212, 196, 123, 0.015);
+}
+[data-theme="calm"] .msg-thinking summary {
+  color: #a89e60;
+  background: rgba(212, 196, 123, 0.02);
+}
+[data-theme="calm"] .msg-thinking-body {
+  color: #8a8a50;
+  border-top: 1px solid rgba(212, 196, 123, 0.04);
+  background: rgba(0,0,0,0.08);
+}
+
+/* ── Stat chips — muted accents ────────────────────────────────────────────── */
+[data-theme="calm"] .stat-chip {
+  background: var(--bg3);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 6px;
+}
+[data-theme="calm"] .stat-chip.accent {
+  border-color: rgba(110, 107, 189, 0.15);
+  background: rgba(110, 107, 189, 0.04);
+}
+[data-theme="calm"] .stat-chip.state-chip.thinking {
+  border-color: rgba(212, 196, 123, 0.2);
+  background: rgba(212, 196, 123, 0.04);
+}
+[data-theme="calm"] .stat-chip.state-chip.generating {
+  border-color: rgba(110, 200, 155, 0.2);
+  background: rgba(110, 200, 155, 0.04);
+}
+[data-theme="calm"] .stat-chip.state-chip.processing {
+  border-color: rgba(123, 174, 212, 0.2);
+  background: rgba(123, 174, 212, 0.04);
+}
+
+/* ── Model switcher — calmer dropdown ──────────────────────────────────────── */
+[data-theme="calm"] .model-switcher-current {
+  border: 1px solid rgba(255,255,255,0.06);
+  background: var(--bg);
+  transition: border-color 0.2s, background 0.2s;
+}
+[data-theme="calm"] .model-switcher-current:hover {
+  border-color: rgba(110, 107, 189, 0.3);
+  background: var(--bg3);
+}
+[data-theme="calm"] .model-switcher-dropdown {
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+}
+[data-theme="calm"] .ms-item:hover {
+  background: rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .ms-item.active {
+  background: rgba(110, 200, 155, 0.06);
+  border-color: rgba(110, 200, 155, 0.15);
+}
+
+/* ── Model cards — softer selection ────────────────────────────────────────── */
+[data-theme="calm"] .model-card.selected {
+  background: rgba(110, 107, 189, 0.07);
+  border-color: rgba(110, 107, 189, 0.18);
+}
+[data-theme="calm"] .model-card.loaded {
+  background: rgba(110, 200, 155, 0.04);
+  border-color: rgba(110, 200, 155, 0.1);
+}
+
+/* ── File tree — gentler hover ─────────────────────────────────────────────── */
+[data-theme="calm"] .ft-item:hover {
+  background: rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .ft-item.dir {
+  color: var(--blue);
+}
+
+/* ── Task graph — calmer animations ────────────────────────────────────────── */
+[data-theme="calm"] .tg-node:hover {
+  background: rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .tg-node.status-in_progress {
+  background: rgba(110, 107, 189, 0.06);
+  border-left: 2px solid rgba(110, 107, 189, 0.35);
+}
+[data-theme="calm"] .tg-node-dot.in_progress {
+  background: #8a85c9;
+  animation: calm-pulse 2.5s ease-in-out infinite;
+  box-shadow: 0 0 5px rgba(138, 133, 201, 0.4);
+}
+[data-theme="calm"] .tg-node-dot.completed {
+  background: var(--green);
+  box-shadow: 0 0 4px rgba(110, 200, 155, 0.35);
+  animation: calm-glow-green 2.5s ease-in-out 1;
+}
+
+@keyframes calm-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50%      { transform: scale(1.2); opacity: 1; }
+}
+@keyframes calm-glow-green {
+  0%   { box-shadow: 0 0 3px rgba(110, 200, 155, 0.2); }
+  40%  { box-shadow: 0 0 10px rgba(110, 200, 155, 0.5); transform: scale(1.3); }
+  100% { box-shadow: 0 0 4px rgba(110, 200, 155, 0.35); transform: scale(1); }
+}
+
+/* ── Startup overlay — serene loading ──────────────────────────────────────── */
+[data-theme="calm"] .startup-overlay {
+  background: #111116;
+}
+[data-theme="calm"] .startup-logo {
+  filter: drop-shadow(0 0 20px rgba(110, 107, 189, 0.3));
+}
+[data-theme="calm"] .startup-bar-fill {
+  background: var(--accent);
+}
+[data-theme="calm"] .startup-bar-fill.done {
+  background: var(--green);
+}
+
+/* ── Model loading overlay — calmer spinner ────────────────────────────────── */
+[data-theme="calm"] .model-loading-overlay {
+  background: rgba(20, 20, 25, 0.82);
+  backdrop-filter: blur(10px);
+}
+[data-theme="calm"] .model-loading-card {
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 18px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.35);
+}
+[data-theme="calm"] .model-loading-ring {
+  border: 3px solid rgba(110, 107, 189, 0.1);
+  border-top-color: var(--accent);
+}
+
+/* ── Build picker — softer cards ───────────────────────────────────────────── */
+[data-theme="calm"] .build-picker-title {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+[data-theme="calm"] .build-card {
+  border: 1.5px solid rgba(255,255,255,0.05);
+  background: var(--bg2);
+  transition: all 0.25s ease;
+}
+[data-theme="calm"] .build-card:hover {
+  border-color: rgba(110, 107, 189, 0.3);
+  background: rgba(110, 107, 189, 0.04);
+  box-shadow: 0 0 0 1px rgba(110, 107, 189, 0.06), 0 4px 20px rgba(0,0,0,0.15);
+  transform: translateY(-1px);
+}
+
+/* ── Session bar — muted controls ──────────────────────────────────────────── */
+[data-theme="calm"] .session-bar {
+  background: var(--bg2);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .session-btn:hover {
+  color: var(--text);
+  border-color: rgba(110, 107, 189, 0.3);
+  background: rgba(255,255,255,0.03);
+}
+
+/* ── Badges — desaturated ──────────────────────────────────────────────────── */
+[data-theme="calm"] .badge-vision {
+  background: rgba(110, 200, 155, 0.08);
+  color: var(--green);
+  border: 1px solid rgba(110, 200, 155, 0.1);
+}
+[data-theme="calm"] .badge-text {
+  background: rgba(212, 196, 123, 0.06);
+  color: var(--yellow);
+  border: 1px solid rgba(212, 196, 123, 0.1);
+}
+
+/* ── Spec workflow — calmer stepper ────────────────────────────────────────── */
+[data-theme="calm"] .spec-step-dot.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  box-shadow: 0 0 5px rgba(123, 174, 212, 0.3);
+}
+[data-theme="calm"] .spec-step-dot.completed {
+  border-color: var(--green);
+  background: var(--green);
+  box-shadow: 0 0 5px rgba(110, 200, 155, 0.25);
+}
+[data-theme="calm"] .spec-step-dot.generating {
+  border-color: var(--yellow);
+  background: var(--yellow);
+  box-shadow: 0 0 6px rgba(212, 196, 123, 0.35);
+  animation: calm-pulse 2s ease-in-out infinite;
+}
+[data-theme="calm"] .spec-gen-btn:hover:not(:disabled) {
+  border-color: rgba(110, 107, 189, 0.3);
+  background: rgba(110, 107, 189, 0.08);
+}
+
+/* ── Inline spec — softer container ────────────────────────────────────────── */
+[data-theme="calm"] .inline-spec-workflow {
+  background: var(--bg2);
+  border: 1.5px solid rgba(255,255,255,0.05);
+  border-radius: 14px;
+}
+[data-theme="calm"] .inline-spec-switcher {
+  background: rgba(110, 107, 189, 0.02);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+/* ── Todo panel — quieter ──────────────────────────────────────────────────── */
+[data-theme="calm"] .todo-panel {
+  background: var(--bg2);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .todo-panel-header {
+  background: rgba(110, 107, 189, 0.03);
+}
+[data-theme="calm"] .todo-panel-header:hover {
+  background: rgba(110, 107, 189, 0.06);
+}
+[data-theme="calm"] .todo-item.in-progress {
+  background: rgba(123, 174, 212, 0.04);
+  border-left: 2px solid rgba(123, 174, 212, 0.3);
+}
+
+/* ── Scrollbars — nearly invisible ─────────────────────────────────────────── */
+[data-theme="calm"] ::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+[data-theme="calm"] ::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.06);
+  border-radius: 4px;
+}
+[data-theme="calm"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.12);
+}
+
+/* ── Fast reply — softer purple ────────────────────────────────────────────── */
+[data-theme="calm"] .fast-reply {
+  color: var(--accent2);
+  opacity: 0.75;
+}
+[data-theme="calm"] .fast-reply-badge {
+  background: rgba(155, 148, 212, 0.04);
+  border: 1px solid rgba(155, 148, 212, 0.1);
+}
+[data-theme="calm"] .fast-reply-text {
+  color: #b0a8d4;
+}
+
+/* ── Ask-user card — gentler gradient ──────────────────────────────────────── */
+[data-theme="calm"] .ask-user-card {
+  background: linear-gradient(135deg, rgba(110, 107, 189, 0.05) 0%, rgba(123, 174, 212, 0.03) 100%);
+  border: 1px solid rgba(110, 107, 189, 0.2);
+  border-radius: 14px;
+}
+[data-theme="calm"] .ask-user-card::before {
+  background: linear-gradient(90deg, var(--accent), rgba(123, 174, 212, 0.5));
+}
+[data-theme="calm"] .ask-user-chip:hover {
+  background: rgba(110, 107, 189, 0.12);
+  border-color: rgba(110, 107, 189, 0.35);
+  box-shadow: 0 2px 8px rgba(110, 107, 189, 0.15);
+}
+
+/* ── Terminal panel — darker calm ──────────────────────────────────────────── */
+[data-theme="calm"] .terminal-panel {
+  background: #0e0e13;
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .terminal-panel-header {
+  background: rgba(18, 18, 24, 0.88);
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .terminal-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  background: rgba(110, 107, 189, 0.04);
+}
+[data-theme="calm"] .terminal-screen {
+  background: #0e0e13;
+  color: #c0c0c8;
+}
+
+/* ── Undo panel — softer yellow ────────────────────────────────────────────── */
+[data-theme="calm"] #undo-panel {
+  border: 1px solid rgba(212, 196, 123, 0.18);
+  box-shadow: 0 8px 36px rgba(0,0,0,0.4);
+}
+[data-theme="calm"] .undo-btn {
+  background: rgba(212, 196, 123, 0.06);
+  border: 1px solid rgba(212, 196, 123, 0.15);
+  color: var(--yellow);
+}
+[data-theme="calm"] .undo-btn:hover {
+  background: rgba(212, 196, 123, 0.1);
+  border-color: rgba(212, 196, 123, 0.25);
+}
+
+/* ── About page — calmer hero ──────────────────────────────────────────────── */
+[data-theme="calm"] .about-card {
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.04);
+  transition: border-color 0.2s;
+}
+[data-theme="calm"] .about-card:hover {
+  border-color: rgba(110, 107, 189, 0.25);
+}
+
+/* ── Tools panel — muted cards ─────────────────────────────────────────────── */
+[data-theme="calm"] .tool-card {
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.04);
+  transition: border-color 0.2s, background 0.2s;
+}
+[data-theme="calm"] .tool-card:hover {
+  border-color: rgba(110, 107, 189, 0.2);
+  background: rgba(255,255,255,0.02);
+}
+
+/* ── Agents tab — softer selection ─────────────────────────────────────────── */
+[data-theme="calm"] .agent-role-card.active {
+  background: rgba(255,255,255,0.03);
+  border-color: rgba(110, 107, 189, 0.25);
+}
+[data-theme="calm"] .agent-tool-chip.selected {
+  background: rgba(110, 107, 189, 0.1);
+  border-color: rgba(110, 107, 189, 0.3);
+  color: var(--accent2);
+}
+
+/* ── Memory tab — quieter event types ──────────────────────────────────────── */
+[data-theme="calm"] .memory-event:hover {
+  background: rgba(255,255,255,0.02);
+}
+[data-theme="calm"] .memory-event-type.conversation {
+  background: rgba(110, 107, 189, 0.15);
+  color: var(--accent2);
+}
+[data-theme="calm"] .memory-event-type.tool_call {
+  background: rgba(110, 200, 155, 0.1);
+  color: var(--green);
+}
+
+/* ── Markdown tables — softer rows ─────────────────────────────────────────── */
+[data-theme="calm"] .md-table th {
+  background: var(--bg3);
+  border-bottom: 2px solid rgba(255,255,255,0.05);
+}
+[data-theme="calm"] .md-table td {
+  border-bottom: 1px solid rgba(255,255,255,0.025);
+  color: #b8b8c2;
+}
+[data-theme="calm"] .md-table tr:hover td {
+  background: rgba(255,255,255,0.015);
+}
+
+/* ── Compact notice — softer green ─────────────────────────────────────────── */
+[data-theme="calm"] .compact-notice {
+  background: rgba(110, 200, 155, 0.04);
+  border-top: 1px solid rgba(110, 200, 155, 0.08);
+  color: var(--green);
+}
+[data-theme="calm"] .compact-btn {
+  background: rgba(110, 200, 155, 0.04);
+  border: 1px solid rgba(110, 200, 155, 0.1);
+  color: var(--green);
+}
+[data-theme="calm"] .compact-btn:hover {
+  background: rgba(110, 200, 155, 0.08);
+  border-color: rgba(110, 200, 155, 0.2);
+}
+
+/* ── Preview center — calmer empty state ───────────────────────────────────── */
+[data-theme="calm"] .preview-center {
+  background: #101015;
+}
+[data-theme="calm"] .preview-center-header {
+  background: rgba(22, 22, 29, 0.82);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .preview-center-viewport {
+  background: #0c0c11;
+}
+[data-theme="calm"] .pce-icon {
+  background: linear-gradient(135deg, rgba(110, 107, 189, 0.25), rgba(123, 174, 212, 0.15));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  opacity: 0.5;
+}
+[data-theme="calm"] .pce-title {
+  color: rgba(255,255,255,0.1);
+}
+
+/* ── Split resize handle — subtle accent ───────────────────────────────────── */
+[data-theme="calm"] .split-resize-handle {
+  background: rgba(255,255,255,0.03);
+}
+[data-theme="calm"] .split-resize-handle:hover,
+[data-theme="calm"] .split-resize-handle.dragging {
+  background: rgba(110, 107, 189, 0.5);
+}
+
+/* ── LSP & Calibration chips — muted ───────────────────────────────────────── */
+[data-theme="calm"] .lsp-chip {
+  background: var(--bg3);
+  border: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .lsp-chip:hover {
+  border-color: rgba(110, 107, 189, 0.25);
+}
+[data-theme="calm"] .cal-chip {
+  background: var(--bg3);
+  border: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .cal-chip:hover {
+  border-color: rgba(110, 107, 189, 0.25);
+}
+
+/* ── Permission toggle — calmer states ─────────────────────────────────────── */
+[data-theme="calm"] .perm-toggle.auto {
+  border-color: rgba(110, 200, 155, 0.2);
+  color: var(--green);
+  background: rgba(110, 200, 155, 0.06);
+}
+[data-theme="calm"] .perm-toggle.ask {
+  border-color: rgba(212, 196, 123, 0.2);
+  color: var(--yellow);
+  background: rgba(212, 196, 123, 0.06);
+}
+
+/* ── Slash autocomplete — softer ───────────────────────────────────────────── */
+[data-theme="calm"] .slash-autocomplete {
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.05);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.25);
+}
+[data-theme="calm"] .slash-ac-item:hover,
+[data-theme="calm"] .slash-ac-item.active {
+  background: rgba(255,255,255,0.03);
+}
+
+/* ── Search results — muted ────────────────────────────────────────────────── */
+[data-theme="calm"] .search-result-item {
+  border: 1px solid rgba(255,255,255,0.04);
+}
+[data-theme="calm"] .search-result-item:hover {
+  background: rgba(255,255,255,0.02);
+}
+
+/* ── Calibration dashboard — softer ────────────────────────────────────────── */
+[data-theme="calm"] .calibration-header {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+/* ── Global transition smoothing ───────────────────────────────────────────── */
+[data-theme="calm"] * {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}

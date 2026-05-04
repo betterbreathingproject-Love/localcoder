@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QwenCoder Mac Studio</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="theme-calm.css">
 </head>
 <body>
   <!-- startup model loading overlay — shown immediately, removed once model is ready -->
@@ -118,6 +119,21 @@
           <div class="sc-field"><span class="sc-label">Vision</span><span style="color:var(--green)">✓ Supports Images</span></div>
           <div class="sc-field"><span class="sc-label">Search</span><span id="searchEngineStatus" style="font-size:11px;color:var(--muted)">Checking...</span></div>
           <div class="sc-field" id="searchInstallHint" style="display:none"><span class="sc-label"></span><a href="#" onclick="window.app.openExternal('https://ast-grep.github.io/guide/quick-start.html');return false" style="font-size:10px;color:var(--accent2)">Install ast-grep for structural search →</a></div>
+        </div>
+
+        <div class="sp-header" style="margin-top:4px"><span class="section-label">APPEARANCE</span></div>
+        <div class="setup-compact" id="appearanceSettings">
+          <div class="sc-field">
+            <span class="sc-label">Theme</span>
+            <select id="themeSelect" class="mode-select" style="width:160px" onchange="setAppTheme(this.value)">
+              <option value="default">🌑 Default</option>
+              <option value="calm">🌊 Calm</option>
+            </select>
+          </div>
+          <div class="sc-field">
+            <span class="sc-label"></span>
+            <span style="font-size:10px;color:var(--muted)">Calm: softer tones, gentler contrast, serene palette</span>
+          </div>
         </div>
 
         <div class="sp-header" style="margin-top:4px"><span class="section-label">STARTUP</span></div>
