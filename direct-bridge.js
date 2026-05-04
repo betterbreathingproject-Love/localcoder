@@ -6075,6 +6075,10 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         'You are in TESTER mode. Verify behaviour through the browser, native macOS/iOS app, or desktop automation. Do NOT write or modify application code.\n' +
         '\n' +
         '## For native macOS/iOS apps (Swift/Xcode projects):\n' +
+        '  0. PREREQUISITE for iOS apps: run bash({command: "xcrun simctl list runtimes 2>&1"}) FIRST.\n' +
+        '     If no iOS runtime is listed, STOP and tell the user: "No iOS simulator runtime installed. Run: xcodebuild -downloadPlatform iOS"\n' +
+        '     Do NOT call xcode_setup_project() or xcode_build_run_simulator() without a runtime — it will loop forever.\n' +
+        '     Also run bash({command: "xcrun simctl list devices available 2>&1 | head -20"}) to confirm actual devices exist (not just device types).\n' +
         '  1. Call xcode_setup_project() FIRST — it detects iOS vs macOS and returns the exact build commands.\n' +
         '  2. macOS apps: use bash() with the xcodebuild command returned by xcode_setup_project. Then open the .app with bash({command: "open /path/to/App.app"}).\n' +
         '     Do NOT call xcode_build_run_simulator() for macOS — it only works for iOS.\n' +
@@ -6112,6 +6116,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         '  - Never click the same element twice without a screenshot between attempts.\n' +
         '  - If stuck after 3 attempts, describe what you see and use ask_user to get guidance.\n' +
         '  - Blank/black screenshot: the app may not be in focus — bash({command: "open -a \\"App Name\\""}) to bring it forward.\n' +
+        '  - iOS simulator loop: if xcode_setup_project() or list_simulators returns no devices more than once, STOP. Tell the user the iOS runtime is missing and call task_complete with a FAIL verdict. Do NOT retry.\n' +
         'Output format: for each step — action taken / expected result / screenshot observation / pass or fail. End with a clear PASS or FAIL verdict.',
 
       'requirements':
