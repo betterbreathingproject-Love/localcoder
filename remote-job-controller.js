@@ -12,7 +12,7 @@ class RemoteJobController extends EventEmitter {
    * @param {number|string} opts.chatId - Paired Telegram chat ID
    * @param {object} opts.recordingManager - RecordingManager instance
    */
-  constructor({ telegramBot, chatId, recordingManager, miniAppUrl, sharedBridge, mainWindow }) {
+  constructor({ telegramBot, chatId, recordingManager, miniAppUrl, sharedBridge, mainWindow, cwdGetter }) {
     super()
     this._bot = telegramBot
     this._chatId = chatId
@@ -21,6 +21,7 @@ class RemoteJobController extends EventEmitter {
     this._miniAppUrl = typeof miniAppUrl === 'function' ? miniAppUrl() : (miniAppUrl || null)
     this._sharedBridge = sharedBridge || null
     this._mainWindow = mainWindow || null
+    this._cwdGetter = typeof cwdGetter === 'function' ? cwdGetter : null
     this._state = 'idle'  // 'idle' | 'running' | 'completed' | 'failed'
     this._jobId = null
     this._bridge = null
@@ -109,8 +110,8 @@ class RemoteJobController extends EventEmitter {
     try {
       await this._sharedBridge.run({
         prompt,
-        cwd: process.cwd(),
-        permissionMode: 'auto',
+        cwd: (this._cwdGetter ? this._cwdGetter() : null) || process.cwd(),
+        permissionMode: 'auto-edit',
         model: 'default',
       })
 

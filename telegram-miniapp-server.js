@@ -318,22 +318,33 @@ class MiniAppServer extends EventEmitter {
 
   /**
    * Wire RemoteJobController events to WebSocket broadcasts.
+   *
+   * The controller uses CallbackSink which emits 'agent-event' with
+   * { taskId, channel, data } — we translate those into typed WS messages.
+   * We also handle the direct 'agent:*' events emitted by the stub controller
+   * in main.js for the shared-bridge path.
    */
   _wireController() {
     const ctrl = this._controller
 
-    // The controller emits on its EventEmitter — listen for sink messages
+    // ── CallbackSink path: emits 'agent-event' with channel + data ──
+    ctrl.on('agent-event', ({ channel, data }) => {
+      if (!data) return
+      if (channel === 'qwen-event') {
+        this._handleQwenEvent(data)
+      }
+    })
+
+    // ── Direct event path: emitted by stub controller or explicit emits ──
     ctrl.on('agent:message', (data) => {
       const log = { type: 'log', text: data.text || data.content || '', logType: 'info', time: Date.now() }
-      this._logs.push(log)
-      if (this._logs.length > 200) this._logs.shift()
+      this._appendLog(log)
       this._broadcast(log)
     })
 
     ctrl.on('agent:tool_use', (data) => {
       const msg = { type: 'tool_use', tool: data.name || data.tool || 'unknown', summary: data.summary || '', time: Date.now() }
-      this._logs.push(msg)
-      if (this._logs.length > 200) this._logs.shift()
+      this._appendLog(msg)
       this._broadcast(msg)
     })
 
@@ -353,7 +364,7 @@ class MiniAppServer extends EventEmitter {
       this._broadcast({ type: 'input_request', question: data.question || '' })
     })
 
-    // Also listen for state changes via polling (fallback)
+    // ── State polling fallback — catches state changes from the shared-bridge path ──
     const prevState = { value: ctrl.getJobState() }
     setInterval(() => {
       const current = ctrl.getJobState()
@@ -361,9 +372,64 @@ class MiniAppServer extends EventEmitter {
         prevState.value = current
         if (current === 'running') {
           this._broadcast({ type: 'job_started', jobId: ctrl.getJobId(), prompt: '' })
+        } else if (current === 'completed') {
+          this._broadcast({ type: 'job_completed', jobId: ctrl.getJobId() })
+        } else if (current === 'failed') {
+          this._broadcast({ type: 'job_failed', jobId: ctrl.getJobId(), error: 'Job failed' })
         }
       }
     }, 2000)
+  }
+
+  /**
+   * Translate a qwen-event data object into a typed log/broadcast message.
+   * Called from both the agent-event listener and the main.js logHandler.
+   * @param {object} data
+   */
+  _handleQwenEvent(data) {
+    if (!data) return
+    let log = null
+
+    if (data.type === 'assistant' || data.type === 'text') {
+      const text = data.content || data.text || ''
+      if (text) log = { type: 'log', text, logType: 'info', time: Date.now() }
+    } else if (data.type === 'tool_call' || data.type === 'tool-start') {
+      const input = typeof data.input === 'string' ? data.input : JSON.stringify(data.input || '')
+      log = { type: 'log', text: `🔧 ${data.name || 'tool'}: ${input.substring(0, 80)}`, logType: 'tool', time: Date.now() }
+    } else if (data.type === 'tool_result' || data.type === 'tool-end') {
+      log = { type: 'log', text: `✓ ${data.name || 'tool'} done`, logType: 'result', time: Date.now() }
+    } else if (data.type === 'done' || data.type === 'finish') {
+      log = { type: 'log', text: '✅ Job completed', logType: 'result', time: Date.now() }
+      this._appendLog(log)
+      this._broadcast(log)
+      this._broadcast({ type: 'job_completed', jobId: this._controller.getJobId() })
+      return
+    } else if (data.type === 'error') {
+      log = { type: 'log', text: `❌ ${data.error || 'Error'}`, logType: 'error', time: Date.now() }
+      this._appendLog(log)
+      this._broadcast(log)
+      this._broadcast({ type: 'job_failed', jobId: this._controller.getJobId(), error: data.error || 'Error' })
+      return
+    } else if (data.type === 'result') {
+      const text = data.result || data.content || ''
+      if (text && text !== '__TASK_COMPLETE__') {
+        log = { type: 'log', text, logType: 'result', time: Date.now() }
+      }
+    }
+
+    if (log) {
+      this._appendLog(log)
+      this._broadcast(log)
+    }
+  }
+
+  /**
+   * Append a log entry, capping at 200 entries.
+   * @param {object} entry
+   */
+  _appendLog(entry) {
+    this._logs.push(entry)
+    if (this._logs.length > 200) this._logs.shift()
   }
 }
 

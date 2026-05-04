@@ -734,6 +734,7 @@ function createWindow() {
         miniAppUrl: () => miniAppPublicUrl,
         sharedBridge: qwenBridge,
         mainWindow,
+        cwdGetter: () => currentProject,
       })
       remoteJobController.on('telegram-unavailable', ({ reason, recordingPath }) => {
         mainWindow?.webContents.send('telegram-unavailable', { reason, recordingPath })
@@ -753,6 +754,7 @@ function createWindow() {
       miniAppUrl: () => miniAppPublicUrl,
       sharedBridge: qwenBridge,
       mainWindow,
+      cwdGetter: () => currentProject,
     })
     remoteJobController.on('telegram-unavailable', ({ reason, recordingPath }) => {
       mainWindow?.webContents.send('telegram-unavailable', { reason, recordingPath })
@@ -828,10 +830,14 @@ function createWindow() {
             chatId,
             recordingManager,
             miniAppUrl: () => miniAppPublicUrl,
+            sharedBridge: qwenBridge,
+            mainWindow,
+            cwdGetter: () => currentProject,
           })
         } else {
-          // Create a minimal controller for the mini app to work standalone
-          // Uses mutable state so the mini app can track job status via polling
+          // Create a minimal stub controller for the mini app to work standalone
+          // (no Telegram pairing). Uses mutable state so the mini app can track
+          // job status via polling and the onRunJob callback handles execution.
           const { EventEmitter } = require('node:events')
           const stubCtrl = Object.assign(new EventEmitter(), {
             _state: 'idle',
@@ -861,7 +867,7 @@ function createWindow() {
               qwenBridge.interrupt()
             }
             remoteJobController._state = 'idle'
-            miniAppServer?._logs.push({ type: 'log', text: '⏹ Job stopped', logType: 'info', time: Date.now() })
+            miniAppServer?._handleQwenEvent({ type: 'error', error: 'Job stopped by user' })
           },
           onRunJob: async (prompt) => {
             // Use the SAME qwenBridge as the main UI — so it shows in the app too
@@ -948,26 +954,18 @@ function createWindow() {
               // Continue anyway — _waitForServer in DirectBridge will retry
             }
 
-            // Hook into qwen events to capture logs for the mini app
+            // Hook into qwen events to capture logs for the mini app and broadcast to WS clients
             const logHandler = (_, data) => {
               if (!miniAppServer) return
-              if (data.type === 'assistant' || data.type === 'text') {
-                const text = data.content || data.text || ''
-                if (text) miniAppServer._logs.push({ type: 'log', text, logType: 'info', time: Date.now() })
-              } else if (data.type === 'tool_call' || data.type === 'tool-start') {
-                miniAppServer._logs.push({ type: 'log', text: `🔧 ${data.name || 'tool'}: ${(data.input || '').substring(0, 80)}`, logType: 'tool', time: Date.now() })
-              } else if (data.type === 'tool_result' || data.type === 'tool-end') {
-                miniAppServer._logs.push({ type: 'log', text: `✓ ${data.name || 'tool'} done`, logType: 'result', time: Date.now() })
-              } else if (data.type === 'done' || data.type === 'finish') {
+              miniAppServer._handleQwenEvent(data)
+              // Also update controller state for polling
+              if (data.type === 'done' || data.type === 'finish') {
                 remoteJobController._state = 'completed'
-                miniAppServer._logs.push({ type: 'log', text: '✅ Job completed', logType: 'result', time: Date.now() })
                 mainWindow?.webContents.off('qwen-event', logHandler)
               } else if (data.type === 'error') {
                 remoteJobController._state = 'failed'
-                miniAppServer._logs.push({ type: 'log', text: `❌ ${data.error || 'Error'}`, logType: 'error', time: Date.now() })
                 mainWindow?.webContents.off('qwen-event', logHandler)
               }
-              if (miniAppServer._logs.length > 200) miniAppServer._logs.shift()
             }
 
             // Listen to the events the bridge sends to the window
@@ -978,13 +976,13 @@ function createWindow() {
               .then(() => {
                 if (remoteJobController._state === 'running') {
                   remoteJobController._state = 'completed'
-                  miniAppServer?._logs.push({ type: 'log', text: '✅ Job completed', logType: 'result', time: Date.now() })
+                  miniAppServer?._handleQwenEvent({ type: 'done' })
                 }
                 mainWindow?.webContents.off('qwen-event', logHandler)
               })
               .catch((err) => {
                 remoteJobController._state = 'failed'
-                miniAppServer?._logs.push({ type: 'log', text: `❌ ${err.message}`, logType: 'error', time: Date.now() })
+                miniAppServer?._handleQwenEvent({ type: 'error', error: err.message })
                 mainWindow?.webContents.off('qwen-event', logHandler)
               })
           },
