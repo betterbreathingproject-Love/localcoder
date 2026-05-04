@@ -3455,56 +3455,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
       }
 
-      // ── Fast model context gathering (turn 0 only, vibe mode) ──────────
-      // Before the main model starts, use the fast model to identify which
-      // files are most relevant to the user's request. This pre-fetches
-      // context so the main model can start writing immediately instead of
-      // spending its first 3-5 turns reading files.
-      if (turn === 0 && assistClient && !systemPromptOverride) {
-        const userPrompt = messages.filter(m => m.role === 'user').pop()?.content || ''
-        // Find the file tree from the variable system message
-        const treeMsg = messages.find(m => m.role === 'system' && m.content && m.content.includes('## Project file tree'))
-        const fileTree = treeMsg?.content || ''
-        if (typeof userPrompt === 'string' && userPrompt && fileTree) {
-          try {
-            const relevantFiles = await assistClient.assistGatherContext(userPrompt, fileTree)
-            if (relevantFiles && relevantFiles.length > 0) {
-              // Read the identified files and inject their content
-              const fileContents = []
-              for (const f of relevantFiles.slice(0, 5)) {
-                const filePath = f.path || f
-                try {
-                  const fullPath = path.resolve(cwd, filePath)
-                  if (fs.existsSync(fullPath)) {
-                    const stat = fs.statSync(fullPath)
-                    if (stat.isFile() && stat.size < 50000) {
-                      const content = fs.readFileSync(fullPath, 'utf-8')
-                      const lines = content.split('\n')
-                      const truncated = lines.length > 200
-                        ? lines.slice(0, 200).join('\n') + `\n... [${lines.length - 200} more lines]`
-                        : content
-                      fileContents.push(`── ${filePath} (${lines.length} lines) ──\n${truncated}`)
-                    }
-                  }
-                } catch { /* skip unreadable files */ }
-              }
-              if (fileContents.length > 0) {
-                messages.push({
-                  role: 'system',
-                  content: `[Pre-gathered context — relevant files identified by fast model]\n${fileContents.join('\n\n')}`,
-                })
-                const fileNames = relevantFiles.slice(0, 5).map(f => f.path || f).join(', ')
-                this.send('qwen-event', {
-                  type: 'fast-assist',
-                  task: 'gather_context',
-                  label: '⚡ Fast Assistant — pre-gathered context',
-                  detail: `${fileContents.length} files: ${fileNames}`,
-                })
-              }
-            }
-          } catch { /* non-fatal — main model will gather its own context */ }
-        }
-      }
+      // ── Fast model context gathering ──────────────────────────────────
+      // Disabled: the prompt is already 60-80k chars with file tree + steering
+      // + tools. Adding pre-gathered file contents pushes it over the limit
+      // and makes prefill take 4+ minutes. The main model gathers its own
+      // context via read_file/search_files which is more targeted.
+      // TODO: Re-enable when prompt size is reduced or prefix cache covers it.
 
       // Todo bootstrap — await before first LLM call to prevent concurrent Metal inference.
       // Running fire-and-forget caused SIGABRT: fast model and main model both hit Metal
@@ -6301,9 +6257,6 @@ The project file tree is included at the end of this prompt — read it before c
 
 ## Tool call rules
 - ALWAYS use tools to read, write, and execute. Never output code or file contents as plain text — the user cannot use it.
-- Before each tool call, write a brief 1-sentence explanation of what you're about to do and why. This helps the user follow your progress and helps you stay on track. Example: "The build failed with a missing import — let me check the header file." Then call the tool.
-- After getting a tool result, briefly note what you learned before calling the next tool. Example: "Found the issue — the function signature changed in v2. Updating the caller."
-- Do NOT write long explanations or plans. Keep reasoning to 1-2 sentences between tool calls. The goal is a running commentary, not an essay.
 - read_file: use this to read source files — NOT bash/cat. read_file handles large files correctly with line ranges and avoids output limits. Never use cat, head, or tail to read source files. For files under 500 lines, read the entire file at once (omit start_line/end_line). For larger files, read in chunks of 500+ lines — never page through a file 200 lines at a time.
 - read_files: PREFERRED over read_file when you need 2+ files. Pass all paths in one call — this is 5-10x faster than separate read_file calls. ALWAYS batch your reads: if you know you need multiple files, use read_files({"paths": ["file1.swift", "file2.swift", ...]}) instead of calling read_file on each one separately. Maximum 20 files per call.
 - edit_file: re-read the target file before editing IF the file content is no longer in your context (e.g. after compaction). If you just read it this session and it's still visible above, proceed directly with the edit.
