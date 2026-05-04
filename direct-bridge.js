@@ -3124,6 +3124,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
     for (let turn = 0; turn < effectiveMaxTurns; turn++) {
       if (this._aborted) return
+      console.log('[direct-bridge] _agentLoop turn %d START', turn)
 
       // Clear coalesced tool call IDs from previous turn
       this._coalescedToolCallIds.clear()
@@ -3246,6 +3247,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // (at the compaction threshold) to give the compactor room to work before
       // hitting the hard maxInputTokens ceiling.
       if (estimateMessagesTokens(messages) > activeCompactionThreshold) {
+        console.log('[direct-bridge] _agentLoop turn %d: COMPACTION triggered', turn)
         this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Compaction triggered: ~${estimateMessagesTokens(messages)} tokens > threshold ${activeCompactionThreshold} (adaptive: ${adaptiveCompactionThreshold}, calibrated: ${effectiveCompactionThreshold}, turn: ${turn})` })
         const before = messages.length
         // Preserve the user's original request so compaction can't erase the task
@@ -3432,6 +3434,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       // Vision offload — replace image parts with text descriptions before LLM call
+      console.log('[direct-bridge] _agentLoop turn %d: pre-vision-offload', turn)
       if (assistClient) {
         for (const msg of messages) {
           if (!Array.isArray(msg.content)) continue
@@ -3465,6 +3468,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // TODO: Re-enable when prompt size is reduced or prefix cache covers it.
 
       // Todo bootstrap — await before first LLM call to prevent concurrent Metal inference.
+      console.log('[direct-bridge] _agentLoop turn %d: pre-todo-bootstrap', turn)
       // Running fire-and-forget caused SIGABRT: fast model and main model both hit Metal
       // simultaneously. Awaiting serializes them via the server's inference semaphore.
       if (turn === 0) {
@@ -3474,7 +3478,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           this.send('qwen-event', { type: 'todo-bootstrap', todos: this._task.initialTodos })
           _lastTodos = this._task.initialTodos
           _bootstrapDone = true
-        } else if (false && assistClient && assistClient.TODO_BOOTSTRAP_ENABLED) {
+        } else if (assistClient && assistClient.TODO_BOOTSTRAP_ENABLED) {
           // TODO: re-enable once fast model semaphore contention is resolved
           const userPrompt = messages.filter(m => m.role === 'user').pop()?.content || ''
           if (typeof userPrompt === 'string' && userPrompt) {
@@ -3525,7 +3529,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       for (let attempt = 0; attempt < 8; attempt++) {
         if (this._aborted) return
         try {
-          this._injectionInterrupt = false  // reset before each attempt
+          this._injectionInterrupt = false
+          console.log('[direct-bridge] _agentLoop turn %d attempt %d: calling _streamCompletion', turn, attempt)  // reset before each attempt
           console.log('[direct-bridge] _agentLoop turn %d: calling _streamCompletion, messages=%d, ~%d tokens', turn, messages.length, estimateMessagesTokens(messages))
           this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[bridge] calling inference (turn ${turn}, ${messages.length} msgs, ~${estimateMessagesTokens(messages)} tokens)` })
           completion = await this._streamCompletion(messages, cwd, model)
