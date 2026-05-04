@@ -1067,6 +1067,11 @@ function createWindow() {
         }
         mainWindow.webContents.on('qwen-event', miniAppQwenListener)
         mainWindow.webContents.on('task-status-event', miniAppTaskListener)
+        mainWindow.webContents.on('orchestrator-completed', () => {
+          if (miniAppServer) {
+            miniAppServer._handleQwenEvent({ type: 'done' })
+          }
+        })
       }
 
       // Start cloudflared quick tunnel for public HTTPS access.

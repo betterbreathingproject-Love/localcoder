@@ -406,7 +406,25 @@ class MiniAppServer extends EventEmitter {
     if (!data) return
     let log = null
 
-    if (data.type === 'assistant' || data.type === 'text') {
+    if (data.type === 'text-delta') {
+      // Streaming text output — accumulates the full response so far.
+      // Throttle: only log every ~500ms to avoid flooding with hundreds of entries.
+      const now = Date.now()
+      if (this._lastTextDeltaTime && now - this._lastTextDeltaTime < 500) return
+      this._lastTextDeltaTime = now
+      const text = data.text || data.delta || ''
+      if (text) {
+        // Show the tail of the accumulated text as a live preview
+        const preview = text.length > 200 ? '...' + text.slice(-200) : text
+        // Replace the previous text-delta log entry instead of appending
+        if (this._lastTextDeltaIdx != null && this._lastTextDeltaIdx < this._logs.length) {
+          this._logs[this._lastTextDeltaIdx] = { type: 'log', text: preview, logType: 'info', time: now }
+          this._broadcast({ type: 'log', text: preview, logType: 'info', time: now })
+          return
+        }
+        log = { type: 'log', text: preview, logType: 'info', time: now }
+      }
+    } else if (data.type === 'assistant' || data.type === 'text') {
       const text = data.content || data.text || ''
       if (text) log = { type: 'log', text, logType: 'info', time: Date.now() }
     } else if (data.type === 'tool_call' || data.type === 'tool-start') {
@@ -414,7 +432,9 @@ class MiniAppServer extends EventEmitter {
       log = { type: 'log', text: `🔧 ${data.name || 'tool'}: ${input.substring(0, 80)}`, logType: 'tool', time: Date.now() }
     } else if (data.type === 'tool_result' || data.type === 'tool-end') {
       log = { type: 'log', text: `✓ ${data.name || 'tool'} done`, logType: 'result', time: Date.now() }
-    } else if (data.type === 'done' || data.type === 'finish') {
+    } else if (data.type === 'session-start') {
+      log = { type: 'log', text: `▶ Agent session started${data.cwd ? ` (${data.cwd})` : ''}`, logType: 'info', time: Date.now() }
+    } else if (data.type === 'session-end' || data.type === 'done' || data.type === 'finish') {
       log = { type: 'log', text: '✅ Job completed', logType: 'result', time: Date.now() }
       this._appendLog(log)
       this._broadcast(log)
@@ -431,9 +451,29 @@ class MiniAppServer extends EventEmitter {
       if (text && text !== '__TASK_COMPLETE__') {
         log = { type: 'log', text, logType: 'result', time: Date.now() }
       }
+    } else if (data.type === 'system') {
+      // Internal debug/status messages — show non-debug ones
+      if (data.subtype !== 'debug') {
+        const text = data.data || data.content || ''
+        if (text) log = { type: 'log', text, logType: 'info', time: Date.now() }
+      }
+    } else if (data.type === 'agent-type') {
+      log = { type: 'log', text: `🤖 Agent: ${data.agentType || 'unknown'}`, logType: 'info', time: Date.now() }
+    } else if (data.type === 'lsp-activity') {
+      log = { type: 'log', text: `🔍 LSP: ${data.action || 'activity'}${data.count ? ` (${data.count} items)` : ''}`, logType: 'tool', time: Date.now() }
+    } else if (data.type === 'compaction-stats') {
+      log = { type: 'log', text: '📦 Context compacted', logType: 'info', time: Date.now() }
     }
 
     if (log) {
+      // Track text-delta log index for in-place updates
+      if (data.type === 'text-delta') {
+        this._lastTextDeltaIdx = this._logs.length
+      } else {
+        // Non-delta event — reset the delta tracker so next delta gets a new entry
+        this._lastTextDeltaIdx = null
+        this._lastTextDeltaTime = null
+      }
       this._appendLog(log)
       this._broadcast(log)
     }
