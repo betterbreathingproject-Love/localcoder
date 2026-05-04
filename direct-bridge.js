@@ -5619,6 +5619,19 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             is_error: false,
             result: summary,
           })
+
+          // Extract numbered options from the summary and emit as ask_user
+          // so the renderer shows clickable follow-up buttons
+          const optionLines = summary.match(/^\d+\.\s+.+$/gm)
+          if (optionLines && optionLines.length >= 2) {
+            const options = optionLines.map(l => l.replace(/^\d+\.\s+/, '').trim()).slice(0, 5)
+            this.send('qwen-event', {
+              type: 'ask-user',
+              question: 'What would you like to do next?',
+              options,
+            })
+          }
+
           return
         }
       }
@@ -6340,17 +6353,13 @@ The project file tree is included at the end of this prompt — read it before c
 Before starting any multi-step task, call update_todos with all steps as "pending". Mark each "in_progress" when you start it and "done" when complete. Call task_complete when all items are done — this is the ONLY way to end a session.
 
 When calling task_complete, your summary MUST:
-1. Summarize what you accomplished (2-3 sentences)
-2. End with exactly 3 numbered follow-up suggestions the user can pick from
+1. Summarize what you accomplished (2-4 sentences)
+2. End with 3 numbered follow-up options the user can pick from
 
-Format the end of your summary like this:
----
-What would you like to do next?
-1. [specific actionable suggestion based on what you found]
-2. [another specific suggestion]
-3. [a third option]
+Format:
+task_complete({"summary": "I analyzed the project and found X, Y, Z.\n\nWhat would you like to do next?\n1. First option\n2. Second option\n3. Third option"})
 
-These MUST be specific to the work you just did — not generic. The user will click one to continue.
+The options will be automatically extracted and shown as clickable buttons.
 
 Use **edit_todos** (not update_todos) when you need to:
 - Add new steps discovered mid-task: edit_todos({"append": [{"content": "New step", "status": "pending"}]})
