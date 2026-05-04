@@ -1496,6 +1496,7 @@ async function sendAgentMode(prompt, opts = {}) {
     <div class="msg-text" id="${respId}-text"></div>
     <div class="msg-activity" id="${respId}-activity">🤖 Agent starting in ${esc(currentProject)}... <span class="activity-dot">●</span></div>
   </div>`)
+  _userScrolledUp = false  // reset scroll lock for new agent run
   scrollOutput()
 
   // Fast model instant acknowledgement — fire immediately, don't await the agent
@@ -3225,12 +3226,32 @@ function _submitAskUserReply(cardId, reply) {
   }
 }
 
-function scrollOutput() {
+// Track whether the user has manually scrolled up — disables auto-scroll
+// until they scroll back near the bottom.
+let _userScrolledUp = false
+
+;(() => {
   const o = document.getElementById('agentOutput')
-  // Only auto-scroll if the user is near the bottom (within 150px).
-  // If they've scrolled up to read earlier messages, don't yank them down.
+  if (o) {
+    o.addEventListener('scroll', () => {
+      const distFromBottom = o.scrollHeight - o.scrollTop - o.clientHeight
+      // User scrolled up — stop auto-scrolling
+      if (distFromBottom > 300) {
+        _userScrolledUp = true
+      }
+      // User scrolled back to bottom — re-enable auto-scroll
+      if (distFromBottom < 50) {
+        _userScrolledUp = false
+      }
+    })
+  }
+})()
+
+function scrollOutput() {
+  if (_userScrolledUp) return
+  const o = document.getElementById('agentOutput')
   const distanceFromBottom = o.scrollHeight - o.scrollTop - o.clientHeight
-  if (distanceFromBottom < 150) {
+  if (distanceFromBottom < 300) {
     o.scrollTop = o.scrollHeight
   }
 }
