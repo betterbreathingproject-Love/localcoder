@@ -104,6 +104,8 @@
   },
   "dependencies": {
     "@qwen-code/sdk": "^0.1.6",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "chokidar": "^5.0.0",
     "node-pty": "^1.1.0",
     "openai": "^4.0.0",
