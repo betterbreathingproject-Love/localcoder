@@ -5530,6 +5530,49 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         _unproductiveTurns++
       }
 
+      // ── Progress summary: every 5 turns, summarize what was accomplished ──
+      // Uses the fast model to generate a brief summary that:
+      // 1. Shows the user what's happening (visible progress update)
+      // 2. Keeps the agent self-aware (injected into context)
+      // 3. Naturally prevents loops (agent sees "you already did X")
+      if (assistClient && turn > 0 && turn % 5 === 0) {
+        try {
+          // Build recent actions from the last few tool results
+          const recentActions = []
+          for (let mi = Math.max(0, messages.length - 20); mi < messages.length; mi++) {
+            const m = messages[mi]
+            if (m.role === 'assistant' && m.tool_calls) {
+              for (const tc of m.tool_calls) {
+                recentActions.push({
+                  tool: tc.function?.name || '?',
+                  args_summary: JSON.stringify(tc.function?.arguments || {}).slice(0, 80),
+                })
+              }
+            } else if (m.role === 'tool' && recentActions.length > 0) {
+              const last = recentActions[recentActions.length - 1]
+              if (!last.result_summary) {
+                last.result_summary = (m.content || '').slice(0, 120)
+              }
+            }
+          }
+          if (recentActions.length > 0) {
+            const summary = await assistClient.assistProgressSummary(recentActions, _lastTodos)
+            if (summary) {
+              this.send('qwen-event', {
+                type: 'progress-summary',
+                summary,
+                turn,
+                todos: _lastTodos,
+              })
+              messages.push({
+                role: 'system',
+                content: `[Progress update — turn ${turn}]: ${summary}\nContinue working on the remaining tasks. Do not repeat work already done.`,
+              })
+            }
+          }
+        } catch { /* non-fatal — skip summary this turn */ }
+      }
+
       if (_unproductiveTurns >= _MAX_UNPRODUCTIVE_TURNS) {
         this.send('qwen-event', {
           type: 'system', subtype: 'warning',

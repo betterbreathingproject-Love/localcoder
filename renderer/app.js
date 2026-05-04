@@ -1652,6 +1652,25 @@ async function sendAgentMode(prompt, opts = {}) {
         else appendMsg('system', `<span style="color:var(--accent,#7c6af7);font-size:11px">${ev.label || '⚡ Fast Assistant'}</span>`)
         break
       }
+      case 'progress-summary': {
+        // Show a visible progress update from the fast model
+        const out = document.getElementById('agentOutput')
+        if (out) {
+          const todoInfo = ev.todos && ev.todos.length > 0
+            ? (() => {
+                const done = ev.todos.filter(t => t.status === 'done' || t.status === 'completed').length
+                return ` (${done}/${ev.todos.length} tasks done)`
+              })()
+            : ''
+          out.insertAdjacentHTML('beforeend',
+            `<div class="msg-system" style="border-left:2px solid var(--accent,#7c6af7);padding:6px 12px;margin:8px 0;font-size:12px">
+              <span style="color:var(--accent,#7c6af7);font-weight:500">📊 Progress${todoInfo}</span>
+              <div style="margin-top:4px;color:var(--fg2,#aaa)">${esc(ev.summary)}</div>
+            </div>`)
+          scrollOutput()
+        }
+        break
+      }
       case 'todo-bootstrap': {
         // Fast-assist generated an initial todo list before the main model's first turn.
         // Only show it if the main model hasn't already called update_todos.
@@ -4907,6 +4926,24 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         const faOrcEl = orchTaskBlockId ? document.getElementById(orchTaskBlockId + '-fast') : null
         if (faOrcEl) faOrcEl.insertAdjacentHTML('beforeend', renderFastAssistBlock(ev))
         else appendMsg('system', `<span style="color:var(--accent,#7c6af7);font-size:11px">${ev.label || '⚡ Fast Assistant'}</span>`)
+        break
+      }
+      case 'progress-summary': {
+        const out = document.getElementById('agentOutput')
+        if (out) {
+          const todoInfo = ev.todos && ev.todos.length > 0
+            ? (() => {
+                const done = ev.todos.filter(t => t.status === 'done' || t.status === 'completed').length
+                return ` (${done}/${ev.todos.length} tasks done)`
+              })()
+            : ''
+          out.insertAdjacentHTML('beforeend',
+            `<div class="msg-system" style="border-left:2px solid var(--accent,#7c6af7);padding:6px 12px;margin:8px 0;font-size:12px">
+              <span style="color:var(--accent,#7c6af7);font-weight:500">📊 Progress${todoInfo}</span>
+              <div style="margin-top:4px;color:var(--fg2,#aaa)">${esc(ev.summary)}</div>
+            </div>`)
+          scrollOutput()
+        }
         break
       }
       case 'todo-bootstrap': {

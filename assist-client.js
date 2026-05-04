@@ -265,6 +265,23 @@ async function assistChatReply(userMessage, agentRole) {
   } catch (_) { return null }
 }
 
+/**
+ * Generate a brief progress summary from recent tool calls.
+ * Used to keep the user informed and help the agent stay self-aware.
+ * @param {Array} recentActions - [{tool, args_summary, result_summary}]
+ * @param {Array} [todos] - Current todo list
+ * @returns {Promise<string|null>}
+ */
+async function assistProgressSummary(recentActions, todos) {
+  try {
+    const res = await _assistRequest('progress_summary', {
+      recent_actions: recentActions,
+      todos: todos || [],
+    }, 10000)
+    return (res && typeof res.result === 'string' && res.result.length > 0) ? res.result : null
+  } catch (_) { return null }
+}
+
 module.exports = {
   // Functions
   assistVision,
@@ -278,6 +295,7 @@ module.exports = {
   assistExtractRelevantSection,
   assistDetectRepetition,
   assistChatReply,
+  assistProgressSummary,
   // Constants
   FETCH_SUMMARIZE_THRESHOLD,
   VISION_MAX_CHARS,

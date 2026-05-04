@@ -1987,6 +1987,7 @@ _VALID_ASSIST_TASK_TYPES = frozenset({
     "detect_repetition",
     "route_task",
     "chat_reply",
+    "progress_summary",
 })
 
 # Legacy route_task support (kept for backward compatibility)
@@ -2892,6 +2893,50 @@ async def _handle_chat_reply(payload: dict) -> AssistResponse:
         return AssistResponse(result=None, elapsed_ms=elapsed_ms, output_tokens=0)
 
 
+async def _handle_progress_summary(payload: dict) -> AssistResponse:
+    """Generate a brief progress summary from recent tool actions."""
+    import time
+    t0 = time.monotonic()
+
+    recent_actions = payload.get("recent_actions", [])
+    todos = payload.get("todos", [])
+
+    if not recent_actions:
+        return AssistResponse(result="No actions to summarize.", elapsed_ms=0, output_tokens=0)
+
+    # Build a compact prompt for the fast model
+    actions_text = "\n".join(
+        f"- {a.get('tool', '?')}: {a.get('result_summary', '')[:100]}"
+        for a in recent_actions[-8:]  # last 8 actions max
+    )
+    todo_text = ""
+    if todos:
+        done = sum(1 for t in todos if t.get("status") in ("done", "completed"))
+        todo_text = f"\nProgress: {done}/{len(todos)} tasks complete."
+
+    prompt = (
+        "Summarize what was accomplished in these recent actions in 1-2 sentences. "
+        "Be specific about files changed and what was done. No preamble.\n\n"
+        f"Actions:\n{actions_text}{todo_text}"
+    )
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: _extract_generate(prompt, max_tokens=80)
+        )
+        summary = response.strip()
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.debug(f"[progress_summary] {elapsed_ms}ms: {summary[:80]!r}")
+        return AssistResponse(result=summary, elapsed_ms=elapsed_ms, output_tokens=len(summary.split()))
+    except Exception as e:
+        logger.warning(f"[_handle_progress_summary] failed: {e}")
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return AssistResponse(result=None, elapsed_ms=elapsed_ms, output_tokens=0)
+
+
 _ASSIST_HANDLERS = {
     "vision": _handle_vision,
     "todo_bootstrap": _handle_todo_bootstrap,
@@ -2905,6 +2950,7 @@ _ASSIST_HANDLERS = {
     "detect_repetition": _handle_detect_repetition,
     "route_task": _handle_route_task,
     "chat_reply": _handle_chat_reply,
+    "progress_summary": _handle_progress_summary,
 }
 
 
