@@ -2497,6 +2497,7 @@ class DirectBridge {
   async run({ prompt, cwd, permissionMode, model, images, conversationHistory, systemPromptOverride, samplingParams, taskGraphPath }) {
     const _runT0 = Date.now();
     console.log('[direct-bridge] run() called, role:', this._agentRole, 'hasSystemOverride:', !!systemPromptOverride);
+    this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[bridge] run() called — role: ${this._agentRole}` })
     // Prevent concurrent runs — if a previous run is still winding down after
     // interrupt(), wait up to 3s for it to finish before starting the new one.
     if (this._running) {
@@ -2563,7 +2564,7 @@ class DirectBridge {
 
       if (isChat) {
         this.send('qwen-event', { type: 'session-start', cwd: cwd || process.cwd() })
-        this.send('qwen-event', { type: 'system', subtype: 'debug', data: '💬 Chat mode — direct response' })
+        this.send('qwen-event', { type: 'system', subtype: 'debug', data: '💬 Chat mode — direct response (intent classified as chat, not task)' })
         this.send('qwen-event', { type: 'agent-type', agentType: 'chat' })
 
         try {
@@ -3016,6 +3017,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       console.log('[direct-bridge] run() entering agentLoop, elapsed %dms', Date.now() - _runT0);
+      this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[bridge] entering agent loop (elapsed ${Date.now() - _runT0}ms)` })
       await this._agentLoop(messages, workDir, model)
       this.send('qwen-event', { type: 'session-end' })
     } catch (err) {
