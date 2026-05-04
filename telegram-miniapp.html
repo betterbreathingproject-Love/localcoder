@@ -333,18 +333,38 @@ async function pollStatus() {
       state.jobId = data.jobId || state.jobId;
     }
 
-    // Update logs from server
+    // Update logs from server — merge new entries instead of replacing
     if (data.logs && data.logs.length > 0) {
-      state.logs = data.logs;
+      // Use log count as a simple cursor — if server has more logs, take the new ones
+      if (data.logs.length > state.logs.length) {
+        const newLogs = data.logs.slice(state.logs.length);
+        for (const l of newLogs) {
+          state.logs.push({ time: l.time || Date.now(), text: l.text, type: l.logType || l.type || 'info' });
+        }
+      } else if (state.logs.length === 0) {
+        // First poll — take all logs
+        state.logs = data.logs.map(l => ({ time: l.time || Date.now(), text: l.text, type: l.logType || l.type || 'info' }));
+      }
+    }
+
+    // Auto-switch to monitor tab when a job starts (from any source)
+    if (data.state === 'running' && prev === 'idle') {
+      state.jobStartedAt = state.jobStartedAt || Date.now();
+      state.tab = 'monitor';
+      // Speed up polling while running
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = setInterval(pollStatus, 1500); }
     }
 
     // Notifications on state transitions
     if (data.state === 'completed' && prev === 'running') {
       state.history.unshift({ id: state.jobId, prompt: state.jobPrompt, state: 'completed', time: Date.now() });
       showToast('Job completed ✓');
+      // Slow polling back down
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = setInterval(pollStatus, 3000); }
     } else if (data.state === 'failed' && prev === 'running') {
       state.history.unshift({ id: state.jobId, prompt: state.jobPrompt, state: 'failed', time: Date.now() });
       showToast('Job failed');
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = setInterval(pollStatus, 3000); }
     }
 
     render();

@@ -920,6 +920,7 @@ function createWindow() {
         miniAppServer = new MiniAppServer({
           jobController: remoteJobController,
           port: MINIAPP_PORT,
+          bridgeStateGetter: () => qwenBridge?._running || false,
           onStopJob: () => {
             if (qwenBridge) {
               qwenBridge.interrupt()

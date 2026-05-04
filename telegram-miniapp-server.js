@@ -19,12 +19,13 @@ class MiniAppServer extends EventEmitter {
    * @param {function} [opts.onRunJob] - Callback to actually run an agent job: (prompt) => void
    * @param {function} [opts.onStopJob] - Callback to stop the running agent job: () => void
    */
-  constructor({ jobController, port = 3847, onRunJob, onStopJob }) {
+  constructor({ jobController, port = 3847, onRunJob, onStopJob, bridgeStateGetter }) {
     super()
     this._controller = jobController
     this._port = port
     this._onRunJob = onRunJob || null
     this._onStopJob = onStopJob || null
+    this._bridgeStateGetter = bridgeStateGetter || null
     this._server = null
     this._wss = null
     this._clients = new Set()
@@ -204,13 +205,28 @@ class MiniAppServer extends EventEmitter {
     }
 
     // GET /api/status — agent status
+    // Returns the controller state, but also checks the shared bridge for
+    // jobs started from the main UI that the controller doesn't know about.
     if (req.method === 'GET' && pathname === '/api/status') {
+      let jobState = this._controller.getJobState()
+      let jobId = this._controller.getJobId()
+
+      // If the controller thinks it's idle but the bridge is running,
+      // a job was started from the main app UI — reflect that here.
+      if (jobState === 'idle' && this._bridgeStateGetter) {
+        const bridgeRunning = this._bridgeStateGetter()
+        if (bridgeRunning) {
+          jobState = 'running'
+          jobId = jobId || 'main_app'
+        }
+      }
+
       res.writeHead(200)
       res.end(JSON.stringify({
         type: 'status',
-        state: this._controller.getJobState(),
-        jobId: this._controller.getJobId(),
-        logs: this._logs.slice(-30),
+        state: jobState,
+        jobId,
+        logs: this._logs.slice(-50),
       }))
       return
     }
