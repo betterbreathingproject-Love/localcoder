@@ -438,13 +438,13 @@ function _renderModelSwitcher(models) {
     const orItem = e.target.closest('[data-or-action]')
     if (orItem) {
       const action = orItem.dataset.orAction
-      if (action === 'configure') { showTab('settings'); return }
+      if (action === 'configure') { showPanel('settings', document.querySelector('[data-panel="settings"]')); return }
       if (action === 'robin-auto') { _switchToOpenRouter('robin-auto'); return }
       if (action === 'custom') {
         if (_cachedOpenRouterCustomModel) {
           _switchToOpenRouter(_cachedOpenRouterCustomModel)
         } else {
-          showTab('settings')
+          showPanel('settings', document.querySelector('[data-panel="settings"]'))
         }
         return
       }
