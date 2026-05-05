@@ -91,6 +91,8 @@ function register(ipcMain, { getMainWindow, getCurrentProject, setCurrentProject
     if (!dir) return { error: 'No project directory' }
     try {
       execSync('git init', { cwd: dir, encoding: 'utf-8', timeout: 5000 })
+      // Set up macOS Keychain credential helper so push auth persists
+      try { execSync('git config --global credential.helper osxkeychain', { encoding: 'utf-8', timeout: 3000 }) } catch {}
       execSync('git add -A', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
       execSync('git commit -m "Initial commit"', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
       return { ok: true }
