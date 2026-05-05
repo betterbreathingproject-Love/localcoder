@@ -933,14 +933,17 @@ def _build_prompt_with_tools(req: ChatRequest):
     template = env.from_string(_chat_template)
 
     # Template kwargs — the enhanced Barubary template supports these:
-    # - auto_disable_thinking_with_tools: prevents <tool_call> leaking into <think> blocks
+    # - enable_thinking: allows <think>...</think> blocks for chain-of-thought
+    # - auto_disable_thinking_with_tools: when False, thinking stays active with tools
+    #   The server's streaming parser properly separates reasoning_content from
+    #   tool calls, so the leak bug is handled at the server level.
     # - max_tool_response_chars: truncate large tool responses in history
     template_kwargs = {
         "messages": tmpl_messages,
         "tools": tmpl_tools,
         "add_generation_prompt": True,
         "enable_thinking": True,
-        "auto_disable_thinking_with_tools": True,
+        "auto_disable_thinking_with_tools": False,
         "max_tool_response_chars": 8000,
     }
 
