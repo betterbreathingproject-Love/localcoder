@@ -88,7 +88,10 @@ function _persistRewindStore() {
 _loadRewindStore()
 
 function rewindStore(original, compressed, originalTokens = 0) {
-  const key = 'rw_' + crypto.randomBytes(12).toString('hex')
+  // Use short sequential keys (rw_1, rw_2, ...) so the model can remember them
+  // across session interrupts. Random hex keys are impossible to recall.
+  const seqNum = _rewindStore.size + 1
+  const key = 'rw_' + seqNum
   // Evict oldest if at capacity
   if (_rewindStore.size >= REWIND_MAX_ENTRIES) {
     const oldest = _rewindStore.keys().next().value

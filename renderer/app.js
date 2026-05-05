@@ -1572,6 +1572,17 @@ function sendAgent() {
 
 // ── agent mode (Qwen Code SDK with tools) ─────────────────────────────────────
 async function sendAgentMode(prompt, opts = {}) {
+  // If the agent has a pending ask_user question, route the user's typed
+  // message as a reply instead of interrupting and starting a new run.
+  // This makes typing in the main input equivalent to typing in the ask_user card.
+  const pendingAskCard = document.querySelector('.ask-user-card')
+  if (pendingAskCard && prompt) {
+    const cardId = pendingAskCard.id
+    _submitAskUserReply(cardId, prompt)
+    document.getElementById('agentPrompt').value = ''
+    return
+  }
+
   if (!currentProject) {
     appendMsg('system', '📁 Agent mode needs a project folder. Opening picker...')
     const p = await window.app.openFolder()
