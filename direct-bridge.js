@@ -6114,6 +6114,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             let parsed
             try { parsed = JSON.parse(line.slice(6)) } catch { continue }
 
+            // Handle prompt processing progress events from server
+            if (parsed.x_progress) {
+              this.send('qwen-event', {
+                type: 'raw-stream',
+                event: { x_progress: parsed.x_progress },
+              })
+              continue
+            }
+
             // Handle usage/stats chunks
             if (parsed.usage && parsed.usage.prompt_tokens) {
               usage = { ...parsed.usage }

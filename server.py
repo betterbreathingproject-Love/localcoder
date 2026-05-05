@@ -1801,11 +1801,17 @@ async def chat_completions(req: ChatRequest):
                         gen = stream_generate(_model, _processor, _prompt_for_inference,
                                              draft_model=_effective_draft, **kwargs)
                         last_result = None
+                        _first_token = True
+                        _prefill_start = time.perf_counter()
                         for chunk in gen:
                             if _cancelled.is_set():
                                 break
                             text = chunk.text if hasattr(chunk, 'text') else str(chunk)
                             if text:
+                                if _first_token:
+                                    _first_token = False
+                                    _ttft = time.perf_counter() - _prefill_start
+                                    loop.call_soon_threadsafe(queue.put_nowait, ("prefill_done", _ttft))
                                 loop.call_soon_threadsafe(queue.put_nowait, ("token", text))
                             last_result = chunk
                         if not _cancelled.is_set() and last_result and hasattr(last_result, 'prompt_tps'):
@@ -1870,6 +1876,16 @@ async def chat_completions(req: ChatRequest):
 
             loop.run_in_executor(None, run_stream)
 
+            # Emit prompt processing start event so the client can show real progress
+            _est_prompt_tokens = _estimate_prompt_tokens(_prompt_for_inference)
+            prefill_start_chunk = {
+                "id": cid, "object": "chat.completion.chunk",
+                "created": created, "model": _model_id,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+                "x_progress": {"stage": "processing", "prompt_tokens": _est_prompt_tokens},
+            }
+            yield f"data: {json.dumps(prefill_start_chunk)}\n\n"
+
             accumulated = ""
             _content_sent_len = 0
             _in_tool_call = False
@@ -1907,6 +1923,16 @@ async def chat_completions(req: ChatRequest):
             try:
                 while True:
                     kind, data = await queue.get()
+                    if kind == "prefill_done":
+                        # Prompt processing complete — emit timing so client can show real TTFT
+                        prefill_done_chunk = {
+                            "id": cid, "object": "chat.completion.chunk",
+                            "created": created, "model": _model_id,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+                            "x_progress": {"stage": "done", "ttft_ms": round(data * 1000, 1), "prompt_tokens": _est_prompt_tokens},
+                        }
+                        yield f"data: {json.dumps(prefill_done_chunk)}\n\n"
+                        continue
                     if kind == "token":
                         accumulated += data
                         full_text_parts.append(data)

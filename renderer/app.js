@@ -3005,10 +3005,24 @@ async function sendAgentMode(prompt, opts = {}) {
         // Handle prompt processing progress
         if (sev.x_progress) {
           if (sev.x_progress.stage === 'processing') {
-            // Server confirmed prompt processing — simulated progress handles the animation
+            // Server confirmed prompt processing — show real token count
             if (!_promptProgressTimer) startPromptProgress()
+            const ptoks = sev.x_progress.prompt_tokens
+            if (ptoks) {
+              setActivity(`⏳ Processing ${ptoks.toLocaleString()} tokens... <span class="activity-dot">●</span>`)
+              updateAgentStatsBar({ state: 'prompt-eval', inputTokens: ptoks, outputTokens: tokenCount, progress: _promptProgress, toolCount: _agentToolCount, activity: `Processing ${ptoks.toLocaleString()} tokens...` })
+              inputTokens = ptoks
+            }
           } else if (sev.x_progress.stage === 'done') {
             stopPromptProgress()
+            const ttft = sev.x_progress.ttft_ms
+            const ptoks = sev.x_progress.prompt_tokens || inputTokens
+            if (ptoks) inputTokens = ptoks
+            if (ttft) {
+              const ptps = ptoks && ttft > 0 ? Math.round(ptoks / (ttft / 1000)) : null
+              setActivity(`✅ Prompt processed${ttft ? ' in ' + (ttft < 1000 ? Math.round(ttft) + 'ms' : (ttft/1000).toFixed(1) + 's') : ''}${ptps ? ' · ' + ptps + ' tok/s' : ''} <span class="activity-dot">●</span>`)
+              updateAgentStatsBar({ state: 'generating', inputTokens, outputTokens: tokenCount, promptTps: ptps, toolCount: _agentToolCount, activity: 'Generating...' })
+            }
           }
           break
         }
