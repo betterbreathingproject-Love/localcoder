@@ -1072,13 +1072,75 @@ async function saveFile() {
 async function refreshGit() {
   if(!currentProject) return
   const s = await window.app.gitStatus(currentProject)
-  document.getElementById('gitBranch').textContent = s.branch ? `⎇ ${s.branch}` : 'Not a git repo'
+
+  if (!s.isRepo) {
+    document.getElementById('gitBranch').innerHTML = '<span style="color:var(--muted)">Not a git repo</span>'
+    document.getElementById('gitChanges').innerHTML = `<div style="padding:12px;text-align:center">
+      <button class="btn-sm" onclick="gitInitProject()">Initialize Git Repository</button>
+    </div>`
+    document.getElementById('gitLog').innerHTML = ''
+    return
+  }
+
+  document.getElementById('gitBranch').innerHTML = `⎇ ${s.branch || 'HEAD'}
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="btn-sm" onclick="gitCommitPrompt()">Commit</button>
+      <button class="btn-sm" onclick="gitPushProject()">Push</button>
+      <button class="btn-sm" onclick="gitConnectRemote()">Connect Remote</button>
+    </div>`
   const stMap = {M:'st-m',A:'st-a',D:'st-d','??':'st-a'}
   document.getElementById('gitChanges').innerHTML = s.files.length
     ? s.files.map(f => `<div class="git-file"><span class="st ${stMap[f.status]||'st-u'}">${f.status}</span><span>${f.file}</span></div>`).join('')
     : '<div class="model-empty">Clean</div>'
   const log = await window.app.gitLog(currentProject)
   document.getElementById('gitLog').innerHTML = log.map(c => `<div class="git-commit"><span class="hash">${c.hash}</span>${c.message}</div>`).join('')
+}
+
+async function gitInitProject() {
+  if (!currentProject) return
+  const result = await window.app.gitInit(currentProject)
+  if (result.error) { appendMsg('system', `❌ Git init failed: ${result.error}`); return }
+  appendMsg('system', '✅ Git repository initialized with initial commit')
+  refreshGit()
+}
+
+async function gitCommitPrompt() {
+  const msg = prompt('Commit message:', 'Update')
+  if (!msg) return
+  const result = await window.app.gitCommit(currentProject, msg)
+  if (result.error) { appendMsg('system', `❌ Commit failed: ${result.error}`); return }
+  appendMsg('system', `✅ Committed: ${msg}`)
+  refreshGit()
+}
+
+async function gitPushProject() {
+  const result = await window.app.gitPush(currentProject)
+  if (result.error) {
+    if (result.error.includes('No configured push destination') || result.error.includes('no upstream')) {
+      appendMsg('system', '⚠️ No remote configured. Use "Connect Remote" to add a GitHub repository.')
+    } else if (result.error.includes('Authentication') || result.error.includes('403') || result.error.includes('fatal:')) {
+      appendMsg('system', '⚠️ Push failed — you may need to authenticate. Opening GitHub to create a token...')
+      window.app.openExternal('https://github.com/settings/tokens/new?scopes=repo&description=QwenCoder+Mac+Studio')
+    } else {
+      appendMsg('system', `❌ Push failed: ${result.error}`)
+    }
+    return
+  }
+  appendMsg('system', '✅ Pushed to remote')
+  refreshGit()
+}
+
+async function gitConnectRemote() {
+  const url = prompt('GitHub repository URL (e.g. https://github.com/user/repo.git):')
+  if (!url) return
+  const result = await window.app.gitAddRemote(currentProject, url)
+  if (result.error) { appendMsg('system', `❌ Failed to add remote: ${result.error}`); return }
+  appendMsg('system', `✅ Remote "origin" set to ${url}`)
+  // Offer to push
+  if (confirm('Remote added. Push now?')) {
+    gitPushProject()
+  }
+  refreshGit()
 }
 
 // ── projects ──────────────────────────────────────────────────────────────────

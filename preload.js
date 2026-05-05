@@ -72,6 +72,10 @@ contextBridge.exposeInMainWorld('app', {
   // git
   gitStatus:      (c)       => ipcRenderer.invoke('git-status', c),
   gitLog:         (c)       => ipcRenderer.invoke('git-log', c),
+  gitInit:        (c)       => ipcRenderer.invoke('git-init', c),
+  gitCommit:      (c, msg)  => ipcRenderer.invoke('git-commit', c, msg),
+  gitPush:        (c)       => ipcRenderer.invoke('git-push', c),
+  gitAddRemote:   (c, url)  => ipcRenderer.invoke('git-add-remote', c, url),
 
   // misc
   openExternal:   (u)       => ipcRenderer.invoke('open-external', u),

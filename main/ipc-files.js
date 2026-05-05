@@ -69,12 +69,12 @@ function register(ipcMain, { getMainWindow, getCurrentProject, setCurrentProject
   // ── git ──────────────────────────────────────────────────────────────────
   ipcMain.handle('git-status', async (_, cwd) => {
     const dir = safePath(cwd || getCurrentProject())
-    if (!dir) return { branch: '', files: [] }
+    if (!dir) return { branch: '', files: [], isRepo: false }
     try {
       const out = execSync('git status --porcelain', { cwd: dir, encoding: 'utf-8', timeout: 5000 })
       const branch = execSync('git branch --show-current', { cwd: dir, encoding: 'utf-8', timeout: 5000 }).trim()
-      return { branch, files: out.trim().split('\n').filter(Boolean).map(l => ({ status: l.slice(0, 2).trim(), file: l.slice(3) })) }
-    } catch { return { branch: '', files: [] } }
+      return { branch, files: out.trim().split('\n').filter(Boolean).map(l => ({ status: l.slice(0, 2).trim(), file: l.slice(3) })), isRepo: true }
+    } catch { return { branch: '', files: [], isRepo: false } }
   })
 
   ipcMain.handle('git-log', async (_, cwd) => {
@@ -84,6 +84,47 @@ function register(ipcMain, { getMainWindow, getCurrentProject, setCurrentProject
       const out = execSync('git log --oneline -20', { cwd: dir, encoding: 'utf-8', timeout: 5000 })
       return out.trim().split('\n').map(l => { const [hash, ...rest] = l.split(' '); return { hash, message: rest.join(' ') } })
     } catch { return [] }
+  })
+
+  ipcMain.handle('git-init', async (_, cwd) => {
+    const dir = safePath(cwd || getCurrentProject())
+    if (!dir) return { error: 'No project directory' }
+    try {
+      execSync('git init', { cwd: dir, encoding: 'utf-8', timeout: 5000 })
+      execSync('git add -A', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
+      execSync('git commit -m "Initial commit"', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
+      return { ok: true }
+    } catch (err) { return { error: err.message } }
+  })
+
+  ipcMain.handle('git-commit', async (_, cwd, message) => {
+    const dir = safePath(cwd || getCurrentProject())
+    if (!dir) return { error: 'No project directory' }
+    try {
+      execSync('git add -A', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
+      execSync(`git commit -m "${(message || 'Update').replace(/"/g, '\\"')}"`, { cwd: dir, encoding: 'utf-8', timeout: 10000 })
+      return { ok: true }
+    } catch (err) { return { error: err.message } }
+  })
+
+  ipcMain.handle('git-push', async (_, cwd) => {
+    const dir = safePath(cwd || getCurrentProject())
+    if (!dir) return { error: 'No project directory' }
+    try {
+      const out = execSync('git push 2>&1', { cwd: dir, encoding: 'utf-8', timeout: 30000 })
+      return { ok: true, output: out }
+    } catch (err) { return { error: err.message } }
+  })
+
+  ipcMain.handle('git-add-remote', async (_, cwd, url) => {
+    const dir = safePath(cwd || getCurrentProject())
+    if (!dir || !url) return { error: 'Missing directory or URL' }
+    try {
+      try { execSync('git remote get-url origin', { cwd: dir, encoding: 'utf-8', timeout: 3000 }) } catch {
+        execSync(`git remote add origin "${url}"`, { cwd: dir, encoding: 'utf-8', timeout: 5000 })
+      }
+      return { ok: true }
+    } catch (err) { return { error: err.message } }
   })
 
   ipcMain.handle('open-external', (_, url) => {
