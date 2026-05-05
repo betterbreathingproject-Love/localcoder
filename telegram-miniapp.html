@@ -264,7 +264,7 @@ body {
 .breadcrumb-link:active { opacity:.7; }
 .breadcrumb-sep { color:var(--txt3); }
 
-.message-list { display:flex; flex-direction:column; gap:6px; max-height:400px; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+.message-list { display:flex; flex-direction:column; gap:6px; max-height:calc(100vh - 220px); overflow-y:auto; -webkit-overflow-scrolling:touch; }
 .msg-item { padding:8px 12px; border-radius:var(--rs); font-size:12px; line-height:1.5; word-break:break-word; }
 .msg-item.user { background:linear-gradient(135deg, rgba(124,92,208,.15), rgba(74,158,255,.15)); border:1px solid rgba(74,158,255,.2); }
 .msg-item.assistant { background:var(--surface); border:1px solid var(--bdr); color:var(--txt2); }
@@ -1049,6 +1049,10 @@ function bindEvents() {
   // Auto-scroll log
   const logContainer = document.getElementById('log-container');
   if (logContainer) logContainer.scrollTop = logContainer.scrollHeight;
+
+  // Auto-scroll message list to show latest message
+  const msgList = document.querySelector('.message-list');
+  if (msgList) msgList.scrollTop = msgList.scrollHeight;
 
   // ── Project navigation ──
   document.querySelectorAll('.project-card').forEach(el => {
