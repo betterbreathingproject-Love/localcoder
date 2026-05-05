@@ -460,15 +460,20 @@ const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'search_files',
-      description: 'Search for a pattern in files using grep. Returns matching lines with file paths and line numbers.',
+      description: 'Search for patterns in files using grep. Returns matching lines with file paths and line numbers. Pass multiple patterns to search in batch (preferred) — all run in parallel for speed.',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Search pattern (regex)' },
+          patterns: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of search patterns (regex) to run in batch. All patterns execute in parallel. Preferred over single pattern.',
+          },
+          pattern: { type: 'string', description: 'Single search pattern (regex). Fallback — prefer patterns array even for one term.' },
           path: { type: 'string', description: 'Directory or file to search in (defaults to cwd)' },
           include: { type: 'string', description: 'File glob pattern to include (e.g. "*.js")' },
         },
-        required: ['pattern'],
+        required: [],
       },
     },
   },
@@ -2135,22 +2140,40 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         return { result: '__TASK_COMPLETE__', summary: args.summary || '' }
       }
       case 'search_files': {
-        if (typeof args.pattern !== 'string' || !args.pattern.trim()) return { error: 'pattern must be a non-empty string. Usage: search_files({"pattern": "searchTerm", "path": ".", "include": "*.js"})' }
+        // Resolve patterns — support single pattern or batch array
+        let patterns = []
+        if (args.patterns && Array.isArray(args.patterns) && args.patterns.length > 0) {
+          patterns = args.patterns.filter(p => typeof p === 'string' && p.trim())
+        } else if (typeof args.pattern === 'string' && args.pattern.trim()) {
+          patterns = [args.pattern]
+        }
+        if (patterns.length === 0) return { error: 'pattern or patterns must be provided. Usage: search_files({"pattern": "term"}) or search_files({"patterns": ["term1", "term2"]})' }
+
         const searchV = validatePath(args.path || '.')
         if (searchV.error) return searchV
         const searchPath = searchV.resolved
-        let cmd = `grep -rn "${args.pattern.replace(/"/g, '\\"')}" "${searchPath}"`
-        if (args.include) cmd += ` --include="${args.include}"`
-        cmd += ' 2>/dev/null | head -50'
-        return new Promise((resolve) => {
-          let output = ''
-          const proc = spawn('bash', ['-c', cmd], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
-          const timer = setTimeout(() => { proc.kill('SIGKILL') }, 10000)
-          proc.stdout.on('data', (chunk) => { output += chunk.toString() })
-          proc.on('close', () => { clearTimeout(timer); resolve({ result: output || 'No matches found.' }) })
-          proc.on('error', () => { clearTimeout(timer); resolve({ result: 'No matches found.' }) })
-          proc.stdin.end()
-        })
+        const includeFlag = args.include ? ` --include="${args.include}"` : ''
+
+        // Execute all patterns in parallel
+        const results = await Promise.all(patterns.map(pat => {
+          const cmd = `grep -rn "${pat.replace(/"/g, '\\"')}" "${searchPath}"${includeFlag} 2>/dev/null | head -50`
+          return new Promise((resolve) => {
+            let output = ''
+            const proc = spawn('bash', ['-c', cmd], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
+            const timer = setTimeout(() => { proc.kill('SIGKILL') }, 10000)
+            proc.stdout.on('data', (chunk) => { output += chunk.toString() })
+            proc.on('close', () => { clearTimeout(timer); resolve({ pattern: pat, output: output || 'No matches found.' }) })
+            proc.on('error', () => { clearTimeout(timer); resolve({ pattern: pat, output: 'No matches found.' }) })
+            proc.stdin.end()
+          })
+        }))
+
+        // Format output — single pattern returns flat result, batch returns grouped
+        if (results.length === 1) {
+          return { result: results[0].output }
+        }
+        const grouped = results.map(r => `── ${r.pattern} ──\n${r.output}`).join('\n\n')
+        return { result: grouped }
       }
       case 'rewind_context': {
         if (!args.key) return { error: 'key parameter is required' }
