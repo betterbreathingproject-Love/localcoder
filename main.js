@@ -449,9 +449,22 @@ ipcMain.handle('qwen-run', async (_, { prompt, cwd, permissionMode, agentRole, m
   // Use small model to pick the best agent role for this prompt (if no explicit role given)
   let resolvedRole = agentRole || 'general'
   let routedByKeyword = false
+
+  // Continuation phrases — preserve the previous agent role instead of re-routing.
+  // When the user says "carry on" after an interrupt/restart, they want the same
+  // agent to continue, not get re-routed to explore/general.
+  const continuationPhrases = ['carry on', 'continue', 'keep going', 'go ahead', 'proceed',
+    'yes', 'yeah', 'yep', 'do it', 'go for it', 'sounds good', 'ok', 'okay', 'sure']
+  const promptLower = prompt.toLowerCase().trim()
+  const isContinuation = continuationPhrases.some(p => promptLower === p || promptLower.startsWith(p + ' '))
+  if (isContinuation && qwenBridge._agentRole && qwenBridge._agentRole !== 'general') {
+    resolvedRole = qwenBridge._agentRole
+    routedByKeyword = true // skip further routing
+  }
+
   // Route via small model when user hasn't explicitly picked a non-general role
   const isAutoMode = !agentRole || agentRole === 'general'
-  if (isAutoMode) {
+  if (isAutoMode && !isContinuation) {
     // Keyword matching first — fast, no model call needed for unambiguous signals
     const keywordType = agentPool.selectType({ title: prompt, description: '' })
     const keywordName = keywordType?.name || 'general'
