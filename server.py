@@ -1486,27 +1486,12 @@ async def _route_vision_request(req: ChatRequest):
     for each image, then returns a standard OpenAI chat completion response.
     Falls back gracefully if the fast model isn't loaded.
     
-    Acquires the inference semaphore to properly serialize with main model
-    inference — prevents the next main model request from starting while
-    vision is still using the GPU (which would block on _metal_lock and
-    cause client-side timeouts).
+    NOTE: Does NOT acquire the inference semaphore — vision uses the fast model
+    (separate from the main model) and the metal lock handles GPU serialization.
+    Acquiring the semaphore here would deadlock when the agent's tool loop calls
+    vision (the previous streaming turn already released the semaphore, but if
+    it's stuck from a crash, vision would block forever).
     """
-    import uuid as _uuid
-    import base64 as _b64
-
-    # Acquire inference semaphore so the main model waits for vision to finish
-    # before starting its next turn. Without this, the main model's request
-    # arrives while vision holds _metal_lock → blocks → client times out.
-    sem = _get_inference_semaphore()
-    await sem.acquire()
-    try:
-        return await _route_vision_request_inner(req)
-    finally:
-        sem.release()
-
-
-async def _route_vision_request_inner(req: ChatRequest):
-    """Inner implementation of vision routing (called under semaphore)."""
     import uuid as _uuid
     import base64 as _b64
 
