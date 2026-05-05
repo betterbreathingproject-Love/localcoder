@@ -62,6 +62,7 @@
       "telegram-miniapp-server.js",
       "recording-manager.js",
       "remote-job-controller.js",
+      "robin-router.js",
       "vendor/**/*",
       "renderer/**/*",
       "assets/**/*",

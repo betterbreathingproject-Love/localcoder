@@ -169,6 +169,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadProjectList()
   await loadContextSettings()
   await loadApiKeys()
+  await _initProviderState()
   await loadOpenRouterSettings()
   await restoreActiveSpec()
   checkCompactor()
@@ -345,8 +346,13 @@ function _renderModelSwitcher(models) {
   const nameEl = document.getElementById('modelSwitcherName')
   if (!list) return
 
-  // Update current model display
-  if (loadedModelId) {
+  // Update current model display based on active provider
+  const _orActive = _currentProvider === 'openrouter'
+  if (_orActive) {
+    const label = _currentOpenRouterModel === 'robin-auto' ? '🐦 Robin Auto' : (_currentOpenRouterModel || 'OpenRouter')
+    nameEl.textContent = label
+    nameEl.style.color = 'var(--accent2, #7c6af7)'
+  } else if (loadedModelId) {
     nameEl.textContent = _formatModelName(loadedModelId)
     nameEl.style.color = ''
   } else {
@@ -354,37 +360,154 @@ function _renderModelSwitcher(models) {
     nameEl.style.color = 'var(--muted)'
   }
 
-  if (!models.length) { list.innerHTML = '<div class="ms-empty">No models found in ~/.lmstudio/models/</div>'; return }
+  let html = ''
 
-  list.innerHTML = models.map((m, i) => {
-    const name = _formatModelName(m.id)
-    const isLoaded = m.id === loadedModelId
-    const icon = m.vision ? '👁️' : '💬'
-    const cls = isLoaded ? 'ms-item active' : 'ms-item'
-    // Show the original path segments for context
-    const pathDisplay = m.id.replace(/^qwen3-vl-/, '').replace(/-/g, '/')
-    return `<div class="${cls}" data-ms-idx="${i}">
-      <div class="ms-item-icon">${icon}</div>
-      <div class="ms-item-info">
-        <div class="ms-item-name">${esc(name)}</div>
-        <div class="ms-item-path">${esc(pathDisplay)}</div>
-        <div class="ms-item-badges">
-          <span class="badge ${m.vision?'badge-vision':'badge-text'}">${m.vision?'Vision':'Text'}</span>
-          <span class="badge badge-type">${esc(m.model_type)}</span>
+  // ── OpenRouter section (inline in dropdown) ─────────────────────────────
+  html += '<div class="ms-section-label">OPENROUTER</div>'
+  const orConfigured = !!_cachedOpenRouterKey
+  if (!orConfigured) {
+    html += '<div class="ms-item" data-or-action="configure" style="opacity:0.6">'
+    html += '  <div class="ms-item-icon">🔑</div>'
+    html += '  <div class="ms-item-info">'
+    html += '    <div class="ms-item-name">Set API key in Settings</div>'
+    html += '    <div class="ms-item-path">Enable OpenRouter to use cloud models</div>'
+    html += '  </div>'
+    html += '</div>'
+  } else {
+    // Robin Auto option (best free model routing)
+    const robinActive = _orActive && _currentOpenRouterModel === 'robin-auto'
+    const robinCls = robinActive ? 'ms-item active' : 'ms-item'
+    html += `<div class="${robinCls}" data-or-action="robin-auto">`
+    html += '  <div class="ms-item-icon">🐦</div>'
+    html += '  <div class="ms-item-info">'
+    html += '    <div class="ms-item-name">Robin Auto</div>'
+    html += '    <div class="ms-item-path">Best free model • smart routing with failover</div>'
+    html += '    <div class="ms-item-badges"><span class="badge badge-vision">Free</span><span class="badge badge-type">Auto</span></div>'
+    html += '  </div>'
+    html += `  ${robinActive ? '<div class="ms-item-check">✓</div>' : ''}`
+    html += '</div>'
+
+    // Custom OpenRouter model option
+    const customModel = _cachedOpenRouterCustomModel || ''
+    const customActive = _orActive && _currentOpenRouterModel !== 'robin-auto' && _currentOpenRouterModel
+    const customCls = customActive ? 'ms-item active' : 'ms-item'
+    html += `<div class="${customCls}" data-or-action="custom">`
+    html += '  <div class="ms-item-icon">🌐</div>'
+    html += '  <div class="ms-item-info">'
+    html += `    <div class="ms-item-name">${customModel ? esc(customModel) : 'Custom Model'}</div>`
+    html += `    <div class="ms-item-path">${customModel ? 'openrouter.ai' : 'Set model ID in Settings tab'}</div>`
+    html += '    <div class="ms-item-badges"><span class="badge badge-type">OpenRouter</span></div>'
+    html += '  </div>'
+    html += `  ${customActive ? '<div class="ms-item-check">✓</div>' : ''}`
+    html += '</div>'
+  }
+
+  // ── Local models section ────────────────────────────────────────────────
+  html += '<div class="ms-divider"></div>'
+  html += '<div class="ms-section-label">LOCAL MLX</div>'
+
+  if (!models.length) {
+    html += '<div class="ms-empty">No models found in ~/.lmstudio/models/</div>'
+  } else {
+    html += models.map((m, i) => {
+      const name = _formatModelName(m.id)
+      const isLoaded = m.id === loadedModelId && !_orActive
+      const icon = m.vision ? '👁️' : '💬'
+      const cls = isLoaded ? 'ms-item active' : 'ms-item'
+      const pathDisplay = m.id.replace(/^qwen3-vl-/, '').replace(/-/g, '/')
+      return `<div class="${cls}" data-ms-idx="${i}">
+        <div class="ms-item-icon">${icon}</div>
+        <div class="ms-item-info">
+          <div class="ms-item-name">${esc(name)}</div>
+          <div class="ms-item-path">${esc(pathDisplay)}</div>
+          <div class="ms-item-badges">
+            <span class="badge ${m.vision?'badge-vision':'badge-text'}">${m.vision?'Vision':'Text'}</span>
+            <span class="badge badge-type">${esc(m.model_type)}</span>
+          </div>
         </div>
-      </div>
-      ${isLoaded ? '<div class="ms-item-check">✓</div>' : ''}
-    </div>`
-  }).join('')
+        ${isLoaded ? '<div class="ms-item-check">✓</div>' : ''}
+      </div>`
+    }).join('')
+  }
 
-  // Use event delegation instead of inline onclick to avoid string escaping issues
+  list.innerHTML = html
+
+  // Use event delegation for all items
   list.onclick = (e) => {
+    // OpenRouter actions
+    const orItem = e.target.closest('[data-or-action]')
+    if (orItem) {
+      const action = orItem.dataset.orAction
+      if (action === 'configure') { showTab('settings'); return }
+      if (action === 'robin-auto') { _switchToOpenRouter('robin-auto'); return }
+      if (action === 'custom') {
+        if (_cachedOpenRouterCustomModel) {
+          _switchToOpenRouter(_cachedOpenRouterCustomModel)
+        } else {
+          showTab('settings')
+        }
+        return
+      }
+    }
+    // Local model selection
     const item = e.target.closest('[data-ms-idx]')
     if (!item) return
     const idx = parseInt(item.dataset.msIdx, 10)
     const m = models[idx]
-    if (m) switchModelFromSwitcher(m.id, m.path)
+    if (m) {
+      _switchToLocal()
+      switchModelFromSwitcher(m.id, m.path)
+    }
   }
+}
+
+// ── Provider state (tracked in renderer for UI updates) ───────────────────────
+let _currentProvider = 'local'
+let _currentOpenRouterModel = ''
+let _cachedOpenRouterKey = ''
+let _cachedOpenRouterCustomModel = ''
+
+async function _initProviderState() {
+  try {
+    const settings = await window.app.getAppSettings()
+    _currentProvider = settings.provider || 'local'
+    _currentOpenRouterModel = settings.openrouterModel || ''
+    _cachedOpenRouterKey = settings.openrouterApiKey || ''
+    _cachedOpenRouterCustomModel = settings.openrouterModel || ''
+    // If robin-auto was the last setting, keep it
+    if (settings.robinAutoEnabled) {
+      _currentProvider = 'openrouter'
+      _currentOpenRouterModel = 'robin-auto'
+    }
+  } catch (_) {}
+}
+
+async function _switchToOpenRouter(model) {
+  const isRobin = model === 'robin-auto'
+  _currentProvider = 'openrouter'
+  _currentOpenRouterModel = model
+  const settings = {
+    provider: 'openrouter',
+    openrouterModel: isRobin ? '' : model,
+    robinAutoEnabled: isRobin,
+  }
+  await window.app.saveAppSettings(settings)
+  // Update UI
+  _renderModelSwitcher(allModels)
+  _updateOpenRouterBadge({ provider: 'openrouter', openrouterApiKey: _cachedOpenRouterKey, openrouterModel: model })
+  // Close dropdown
+  const dd = document.getElementById('modelSwitcherDropdown')
+  const bar = document.getElementById('modelSwitcherBar')
+  if (dd) dd.style.display = 'none'
+  if (bar) bar.classList.remove('open')
+  appendMsg('system', isRobin ? '🐦 Robin Auto enabled — routing to best free model' : `🌐 OpenRouter: ${model}`)
+}
+
+async function _switchToLocal() {
+  _currentProvider = 'local'
+  _currentOpenRouterModel = ''
+  await window.app.saveAppSettings({ provider: 'local', robinAutoEnabled: false })
+  _updateOpenRouterBadge({ provider: 'local', openrouterApiKey: _cachedOpenRouterKey })
 }
 
 function toggleModelSwitcher() {
@@ -3626,6 +3749,9 @@ async function loadOpenRouterSettings() {
     const modelEl = document.getElementById('or-model')
     if (keyEl && settings.openrouterApiKey) keyEl.value = settings.openrouterApiKey
     if (modelEl && settings.openrouterModel) modelEl.value = settings.openrouterModel
+    // Sync cached state for model switcher
+    _cachedOpenRouterKey = settings.openrouterApiKey || ''
+    _cachedOpenRouterCustomModel = settings.openrouterModel || ''
     _updateOpenRouterStatus(settings)
     _updateOpenRouterBadge(settings)
   } catch (_) {}
@@ -3646,6 +3772,17 @@ async function saveOpenRouterSettings() {
     openrouterModel: model,
   }
   await window.app.saveAppSettings(settings)
+  // Sync cached state for model switcher
+  _cachedOpenRouterKey = apiKey
+  _cachedOpenRouterCustomModel = model
+  if (enabled) {
+    _currentProvider = 'openrouter'
+    _currentOpenRouterModel = model || 'robin-auto'
+  } else {
+    _currentProvider = 'local'
+  }
+  // Re-render model switcher to reflect new state
+  _renderModelSwitcher(allModels)
   // Always update status and badge regardless of enabled state
   _updateOpenRouterStatus(settings)
   _updateOpenRouterBadge(settings)
@@ -3672,10 +3809,11 @@ function _updateOpenRouterBadge(settings) {
   if (!badge) return
   const isActive = settings.provider === 'openrouter' && settings.openrouterApiKey
   badge.style.display = isActive ? 'flex' : 'none'
-  if (localBtn) localBtn.style.display = isActive ? 'none' : ''
+  // Show both badge and local button — user can switch inline via dropdown
   if (isActive) {
+    const isRobin = settings.robinAutoEnabled || settings.openrouterModel === 'robin-auto'
     const modelLabel = document.getElementById('openrouterBadgeModel')
-    if (modelLabel) modelLabel.textContent = settings.openrouterModel || 'OpenRouter'
+    if (modelLabel) modelLabel.textContent = isRobin ? '🐦 Robin Auto' : (settings.openrouterModel || 'OpenRouter')
   }
 }
 

@@ -1264,6 +1264,17 @@ app.whenReady().then(() => {
     ipcServer.waitForServer(SERVER_URL).then(ok => {
       mainWindow?.webContents.send('server-status', { running: ok })
     })
+    // Initialize Robin Router if OpenRouter is configured with robin-auto
+    try {
+      const { getAppSettings } = require('./projects')
+      const appSettings = getAppSettings()
+      if (appSettings.openrouterApiKey && appSettings.robinAutoEnabled) {
+        const { robinRouter } = require('./robin-router')
+        robinRouter.start(appSettings.openrouterApiKey).catch(err => {
+          console.warn('[robin-router] Failed to start:', err.message)
+        })
+      }
+    } catch (_) {}
   }
 })
 app.on('window-all-closed', () => {

@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('app', {
   // app settings (global)
   getAppSettings: ()        => ipcRenderer.invoke('get-app-settings'),
   saveAppSettings:(s)       => ipcRenderer.invoke('save-app-settings', s),
+  robinStats: ()            => ipcRenderer.invoke('robin-stats'),
 
   // setup wizard
   openSetupWizard:()        => ipcRenderer.invoke('open-setup-wizard'),

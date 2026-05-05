@@ -2537,10 +2537,23 @@ class DirectBridge {
       const hasImages = images && images.length > 0
 
       if (hasImages) {
-        // Images attached — always chat mode (describe the image).
-        // The fast model is also the vision model; running both concurrently
-        // causes semaphore contention. Chat mode avoids that race.
-        isChat = true
+        // Images attached — default to chat mode (describe the image) UNLESS
+        // the prompt text clearly indicates a task (fix, broken, look at, etc.).
+        // The agent loop already handles images by describing them via the vision
+        // model and injecting the description as context for tool use.
+        const lower = (prompt || '').toLowerCase()
+        const taskSignals = [
+          'fix', 'broken', 'bug', 'error', 'wrong', 'issue', 'not working',
+          'look at', 'update', 'change', 'modify', 'add', 'remove', 'delete',
+          'implement', 'create', 'build', 'refactor', 'move', 'rename',
+          'its broken', "it's broken", 'the path', 'debug', 'solve', 'repair',
+        ]
+        const hasTaskIntent = taskSignals.some(s => lower.includes(s))
+        if (!hasTaskIntent) {
+          isChat = true
+        }
+        // If task intent detected with images, fall through to agent loop which
+        // will describe the image via vision model and use it as context for tools.
       } else if (assistClient) {
         // Text-only: use fast model to classify intent (~200ms)
         try {
@@ -2627,7 +2640,20 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                 const appSettings = getAppSettings()
                 if (appSettings.provider === 'openrouter' && appSettings.openrouterApiKey) {
                   const orBody = JSON.parse(body)
-                  if (appSettings.openrouterModel) orBody.model = appSettings.openrouterModel
+                  // Robin Auto: pick best free model
+                  if (appSettings.robinAutoEnabled) {
+                    try {
+                      const { robinRouter } = require('./robin-router')
+                      if (robinRouter.enabled) {
+                        const selected = robinRouter.selectModel()
+                        if (selected) orBody.model = selected
+                      } else {
+                        orBody.model = 'openrouter/auto'
+                      }
+                    } catch (_) { orBody.model = 'openrouter/auto' }
+                  } else if (appSettings.openrouterModel) {
+                    orBody.model = appSettings.openrouterModel
+                  }
                   delete orBody.repetition_penalty
                   const orBodyStr = JSON.stringify(orBody)
                   // Build headers fresh — never share with the local fallback path
@@ -5953,8 +5979,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // settings), route the completion request to OpenRouter instead of
         // the local MLX server. The body is OpenAI-compatible so no other
         // changes are needed.
+        // Robin Auto mode uses the robin-router to select the best free model.
         let completionUrl = `${SERVER_URL}/v1/chat/completions`
         let extraHeaders = {}
+        let _robinModelId = null
+        let _robinStartTime = 0
         try {
           const { getAppSettings } = require('./projects')
           const appSettings = getAppSettings()
@@ -5965,8 +5994,28 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               'HTTP-Referer': 'https://github.com/qwencoder-mac-studio',
               'X-Title': 'QwenCoder Mac Studio',
             }
-            // Use the configured OpenRouter model if set, otherwise keep body.model
-            if (appSettings.openrouterModel) {
+            // Robin Auto: use robin-router to pick the best free model
+            if (appSettings.robinAutoEnabled) {
+              try {
+                const { robinRouter } = require('./robin-router')
+                if (robinRouter.enabled) {
+                  const selected = robinRouter.selectModel()
+                  if (selected) {
+                    body.model = selected
+                    _robinModelId = selected
+                    _robinStartTime = Date.now()
+                    this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[Robin] routing to ${selected}` })
+                  }
+                } else {
+                  // Robin not ready yet — fall back to OpenRouter auto
+                  body.model = 'openrouter/auto'
+                  this.send('qwen-event', { type: 'system', subtype: 'debug', data: '[Robin] pool not ready, using openrouter/auto' })
+                }
+              } catch (_) {
+                body.model = 'openrouter/auto'
+              }
+            } else if (appSettings.openrouterModel) {
+              // Use the configured OpenRouter model if set, otherwise keep body.model
               body.model = appSettings.openrouterModel
             }
             // OpenRouter doesn't support repetition_penalty — remove it
@@ -5987,6 +6036,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             this._activeReq = null
             let errMsg = `Server returned HTTP ${res.statusCode}`
             try { const parsed = JSON.parse(errBody); errMsg = parsed.error?.message || parsed.detail || errMsg } catch {}
+            // Record Robin failure on HTTP error
+            if (_robinModelId) {
+              try {
+                const { robinRouter } = require('./robin-router')
+                robinRouter.recordFailure(_robinModelId)
+              } catch (_) {}
+            }
             reject(new Error(errMsg))
           })
           return
@@ -6155,11 +6211,25 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               })
             }
           }
+          // Record Robin metrics on success
+          if (_robinModelId && _robinStartTime) {
+            try {
+              const { robinRouter } = require('./robin-router')
+              robinRouter.recordSuccess(_robinModelId, Date.now() - _robinStartTime)
+            } catch (_) {}
+          }
           resolve({ text: accumulated, toolCalls, usage, finishReason, reasoningContent: reasoningContent || null })
         })
 
         res.on('error', (err) => {
           this._activeReq = null
+          // Record Robin metrics on failure
+          if (_robinModelId) {
+            try {
+              const { robinRouter } = require('./robin-router')
+              robinRouter.recordFailure(_robinModelId)
+            } catch (_) {}
+          }
           reject(err)
         })
       } catch (err) {

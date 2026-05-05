@@ -178,7 +178,27 @@ function register(ipcMain, { getCurrentProject, setCurrentProject, getMainWindow
 
   ipcMain.handle('save-app-settings', (_, settings) => {
     if (!settings || typeof settings !== 'object') return { error: 'settings must be an object' }
-    return saveAppSettings(settings)
+    const result = saveAppSettings(settings)
+    // Start/stop Robin Router based on settings change
+    try {
+      const { robinRouter } = require('../robin-router')
+      if (result.robinAutoEnabled && result.openrouterApiKey) {
+        if (!robinRouter.enabled) {
+          robinRouter.start(result.openrouterApiKey).catch(() => {})
+        }
+      } else {
+        robinRouter.stop()
+      }
+    } catch (_) {}
+    return result
+  })
+
+  // ── Robin Router stats ──────────────────────────────────────────────────
+  ipcMain.handle('robin-stats', () => {
+    try {
+      const { robinRouter } = require('../robin-router')
+      return { enabled: robinRouter.enabled, ...robinRouter.getStats(), models: robinRouter.getModels().slice(0, 5) }
+    } catch (_) { return { enabled: false } }
   })
 }
 
