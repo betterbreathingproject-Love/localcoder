@@ -3328,13 +3328,26 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           const m = messages[pi]
           if (!m || !m.content) continue
 
-          // Prune stale system nudges (STATUS, BLOCKED, REJECTED, planning nudges)
+          // Prune stale system nudges (STATUS, planning nudges, old warnings)
           // These are injected by the agent loop and become stale after a few turns.
-          if (m.role === 'system' && /^(STATUS:|BLOCKED:|REJECTED:|WARNING:|NOTICE:|You described what|You are STUCK|STOP\.)/.test(m.content)) {
+          // IMPORTANT: Do NOT prune read-loop enforcement (STOP READING, BLOCKED, REJECTED)
+          // or CHECKPOINT messages — those must persist to maintain pressure on the agent.
+          if (m.role === 'system' && /^(STATUS:|NOTICE:|You described what|You are STUCK)/.test(m.content)) {
             messages.splice(pi, 1)
             pi--
             pruned++
             continue
+          }
+          // Prune old WARNING messages but keep the most recent one (it's the active enforcement)
+          if (m.role === 'system' && /^(WARNING:)/.test(m.content)) {
+            // Check if there's a newer WARNING after this one — only prune if so
+            const hasNewerWarning = messages.slice(pi + 1).some(mm => mm.role === 'system' && /^(WARNING:)/.test(mm.content))
+            if (hasNewerWarning) {
+              messages.splice(pi, 1)
+              pi--
+              pruned++
+              continue
+            }
           }
 
           // Prune short write_file/edit_file confirmations from old turns.
@@ -3500,6 +3513,17 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // blocks re-reads of files whose content is no longer in context.
         _readFileHistory.clear()
         _writeHistory.clear()  // also reset write dedup — content may have changed
+
+        // Re-inject read-loop enforcement state after compaction so the agent
+        // doesn't lose the pressure to write. The counter survives but the
+        // system messages in the array were wiped by compaction.
+        if (consecutiveReadsWithoutWrite >= 5) {
+          messages.push({
+            role: 'system',
+            content: `REMINDER: You have made ${consecutiveReadsWithoutWrite} consecutive read calls without writing. ` +
+              `You MUST call edit_file or write_file on your next turn. Further read calls will be rejected.`,
+          })
+        }
       }
 
       // ── Memory: emit memory-archive event after compaction ────────────────
