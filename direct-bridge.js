@@ -2144,7 +2144,17 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         let patterns = []
         if (args.patterns && Array.isArray(args.patterns) && args.patterns.length > 0) {
           patterns = args.patterns.filter(p => typeof p === 'string' && p.trim())
-        } else if (typeof args.pattern === 'string' && args.pattern.trim()) {
+        } else if (typeof args.patterns === 'string') {
+          // Model may have passed patterns as a string instead of array — try to parse
+          try {
+            const parsed = JSON.parse(args.patterns)
+            if (Array.isArray(parsed)) patterns = parsed.filter(p => typeof p === 'string' && p.trim())
+          } catch {
+            // Treat as a single pattern
+            if (args.patterns.trim()) patterns = [args.patterns.trim()]
+          }
+        }
+        if (patterns.length === 0 && typeof args.pattern === 'string' && args.pattern.trim()) {
           patterns = [args.pattern]
         }
         if (patterns.length === 0) return { error: 'pattern or patterns must be provided. Usage: search_files({"pattern": "term"}) or search_files({"patterns": ["term1", "term2"]})' }
@@ -2808,8 +2818,14 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         const descriptions = []
         for (let i = 0; i < images.length; i++) {
           const img = images[i]
+          // In task mode, guide the vision model to describe the technical issue
+          // rather than giving generic advice. The description feeds into the agent
+          // loop which will use tools to fix the problem.
+          const visionPrompt = prompt
+            ? `You are a code debugging assistant. The user says: "${prompt}"\n\nDescribe what you see in this screenshot that relates to the issue. Focus on:\n- What UI elements are visible and their state\n- What appears broken or incorrect\n- Any error messages, console output, or visual glitches\n- Specific coordinates, positions, or layout issues\nBe technical and precise. Do NOT give advice on how to fix it — just describe what you observe.`
+            : 'Describe what you see in this image in detail. Focus on any visible errors, broken UI elements, or incorrect behavior.'
           const content = [
-            { type: 'text', text: prompt || 'Describe what you see in this image in detail.' },
+            { type: 'text', text: visionPrompt },
             { type: 'image_url', image_url: { url: img.b64 } },
           ]
           const body = JSON.stringify({ messages: [{ role: 'user', content }], max_tokens: 1024 })
