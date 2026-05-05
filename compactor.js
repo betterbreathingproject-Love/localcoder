@@ -26,27 +26,46 @@ const COMPACTOR_SCRIPT = (() => {
   return path.join(__dirname, 'compactor-bridge.py')
 })()
 
-// ── Node-side Rewind Store ─────────────────────────────────────────────────
-const { REWIND_MAX_ENTRIES, REWIND_TTL_MS } = require('./config')
+// ── Node-side Rewind Store (project-scoped) ────────────────────────────────
+// Each project gets its own rewind store with sequential keys (rw_1, rw_2...).
+// Persisted to disk per-project so keys survive interrupts and restarts.
+const { REWIND_MAX_ENTRIES } = require('./config')
 
-const _rewindStore = new Map() // key → { original, compressed, storedAt, tokens }
+const _rewindStores = new Map() // projectId → Map(key → { original, compressed, storedAt })
+let _activeProjectId = '_default'
 
-// ── Disk persistence ───────────────────────────────────────────────────────
-function _rewindStorePath() {
-  return path.join(os.homedir(), '.qwencoder', 'rewind-store.json')
+function setRewindProject(cwd) {
+  _activeProjectId = cwd ? path.basename(cwd) : '_default'
+  if (!_rewindStores.has(_activeProjectId)) {
+    _rewindStores.set(_activeProjectId, new Map())
+    _loadRewindStore(_activeProjectId)
+  }
 }
 
-function _loadRewindStore() {
+function _getActiveStore() {
+  if (!_rewindStores.has(_activeProjectId)) _rewindStores.set(_activeProjectId, new Map())
+  return _rewindStores.get(_activeProjectId)
+}
+
+// ── Disk persistence ───────────────────────────────────────────────────────
+function _rewindStorePath(projectId) {
+  const id = projectId || _activeProjectId
+  return path.join(os.homedir(), '.qwencoder', `rewind-${id}.json`)
+}
+
+function _loadRewindStore(projectId) {
   try {
-    const p = _rewindStorePath()
+    const p = _rewindStorePath(projectId)
     if (!fs.existsSync(p)) return
     const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
+    const store = _rewindStores.get(projectId) || new Map()
     let loaded = 0
     for (const [key, entry] of Object.entries(raw)) {
-      _rewindStore.set(key, entry)
+      store.set(key, entry)
       loaded++
     }
-    if (loaded > 0) console.log(`[compactor] Loaded ${loaded} rewind entries from disk`)
+    _rewindStores.set(projectId, store)
+    if (loaded > 0) console.log(`[compactor] Loaded ${loaded} rewind entries for "${projectId}"`)
   } catch (err) {
     console.warn(`[compactor] Failed to load rewind store: ${err.message}`)
   }
@@ -54,7 +73,6 @@ function _loadRewindStore() {
 
 let _saveTimer = null
 function _scheduleRewindSave() {
-  // Debounce: write at most once per 2s to avoid hammering disk on rapid compression
   if (_saveTimer) return
   _saveTimer = setTimeout(() => {
     _saveTimer = null
@@ -66,8 +84,9 @@ function _persistRewindStore() {
   try {
     const dir = path.join(os.homedir(), '.qwencoder')
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    const store = _getActiveStore()
     const obj = {}
-    for (const [key, entry] of _rewindStore.entries()) {
+    for (const [key, entry] of store.entries()) {
       obj[key] = entry
     }
     fs.writeFileSync(_rewindStorePath(), JSON.stringify(obj), 'utf-8')
@@ -76,37 +95,33 @@ function _persistRewindStore() {
   }
 }
 
-// Load persisted entries on module init
-_loadRewindStore()
-
 function rewindStore(original, compressed, originalTokens = 0) {
-  // Use short sequential keys (rw_1, rw_2, ...) so the model can remember them
-  // across session interrupts. Random hex keys are impossible to recall.
-  const seqNum = _rewindStore.size + 1
+  const store = _getActiveStore()
+  const seqNum = store.size + 1
   const key = 'rw_' + seqNum
-  // Evict oldest if at capacity
-  if (_rewindStore.size >= REWIND_MAX_ENTRIES) {
-    const oldest = _rewindStore.keys().next().value
-    _rewindStore.delete(oldest)
+  if (store.size >= REWIND_MAX_ENTRIES) {
+    const oldest = store.keys().next().value
+    store.delete(oldest)
   }
-  _rewindStore.set(key, { original, compressed, storedAt: Date.now(), originalTokens })
+  store.set(key, { original, compressed, storedAt: Date.now(), originalTokens })
   _scheduleRewindSave()
   return key
 }
 
 function rewindRetrieve(key) {
-  const entry = _rewindStore.get(key)
+  const store = _getActiveStore()
+  const entry = store.get(key)
   if (!entry) return null
   return entry.original
 }
 
 function rewindClear() {
-  _rewindStore.clear()
+  _getActiveStore().clear()
   _persistRewindStore()
 }
 
 function rewindSize() {
-  return _rewindStore.size
+  return _getActiveStore().size
 }
 
 // ── Check installed ────────────────────────────────────────────────────────
@@ -242,4 +257,4 @@ function getStatus(pythonPath) {
   })
 }
 
-module.exports = { compressMessages, compressText, rewind, getStatus, checkInstalled, rewindClear, rewindSize }
+module.exports = { compressMessages, compressText, rewind, getStatus, checkInstalled, rewindClear, rewindSize, setRewindProject }

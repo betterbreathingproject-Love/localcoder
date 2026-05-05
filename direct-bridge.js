@@ -3115,6 +3115,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
    * The core agentic loop: call model → if tool_calls, execute & loop → else done.
    */
   async _agentLoop(messages, cwd, model, maxTurns = 50) {
+    // Scope the rewind store to this project so keys don't collide across projects
+    compactor.setRewindProject(cwd)
+
     // Read calibrated settings if available, fall back to parameter/hardcoded defaults
     const profile = this._getCalibrationProfile?.()
     const effectiveMaxTurns = profile?.maxTurns ?? maxTurns
