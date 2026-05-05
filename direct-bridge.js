@@ -3185,6 +3185,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
     let consecutiveErrors = 0
     let consecutiveReadsWithoutWrite = 0  // Track read-only loops
+    let _lastFailedEditPath = null  // Track path of last failed edit — exempt re-reads of this file
+    const _editAttemptedPaths = new Set()  // All paths the agent has tried to edit — exempt from read blocks
     let lastTextResponses = []  // Track recent text-only responses for repetition detection
     let consecutivePlanningNudges = 0  // Track how many times we've nudged for planning-only responses
     let _annotationNudgeCount = 0  // Track consecutive hallucinated-annotation nudges — cap to prevent infinite loop
@@ -4545,7 +4547,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // If the model is trying to read 10+ files and hasn't written anything
         // yet, it's gathering context it doesn't need. For file CREATION tasks,
         // the file tree is sufficient. Intercept and tell it to write.
+        // Exempt: reads of files the agent has already tried (and failed) to edit.
         if ((fnName === 'read_files' || fnName === 'read_file') && consecutiveReadsWithoutWrite >= 3) {
+          // Skip this check entirely if reading a file we already tried to edit
+          const _preflightPath = fnName === 'read_file' && fnArgs.path
+          const _isEditTargetRead = _preflightPath && (_lastFailedEditPath === fnArgs.path || _editAttemptedPaths.has(fnArgs.path))
+          if (!_isEditTargetRead) {
           const hasAnyWrites = messages.some(m => m.role === 'tool' && m.content &&
             (m.content.startsWith('Wrote ') || m.content.startsWith('Edited ') || m.content.includes('edits applied')))
           if (!hasAnyWrites && fnName === 'read_files') {
@@ -4564,6 +4571,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               }
             } catch { /* parse failed — let it through */ }
           }
+          } // end !_isEditTargetRead
         }
 
         // Update badge when agent shifts to writing code
@@ -4935,9 +4943,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Exempt paged reads (start_line/end_line) — the agent is navigating a
         // large file to find the section it needs to edit. Also exempt search_files
         // since it's trying to locate code to modify.
+        // Fix #3: Also exempt reads of files the agent has attempted to edit —
+        // it needs the current content to construct a valid old_string.
         const _READ_BLOCK_TOOLS = new Set(['read_file', 'read_files', 'list_dir'])
         const isPagedRead = fnName === 'read_file' && (fnArgs.start_line != null || fnArgs.end_line != null)
-        if (consecutiveReadsWithoutWrite >= 7 && _READ_BLOCK_TOOLS.has(fnName) && !isPagedRead) {
+        const isReadOfEditTarget = fnName === 'read_file' && fnArgs.path &&
+          (_lastFailedEditPath === fnArgs.path || _editAttemptedPaths.has(fnArgs.path))
+        if (consecutiveReadsWithoutWrite >= 7 && _READ_BLOCK_TOOLS.has(fnName) && !isPagedRead && !isReadOfEditTarget) {
           const blockMsg = `REJECTED: You have made ${consecutiveReadsWithoutWrite} consecutive read calls without writing. ` +
             `This call to ${fnName} has been blocked. You MUST call edit_file or write_file next. ` +
             `Use the information already in your context to make your edit.`
@@ -5734,6 +5746,19 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           consecutiveReadsWithoutWrite += isPagedNav ? 0.5 : 1
         } else if (WRITE_TOOLS.has(fnName) && !isError) {
           consecutiveReadsWithoutWrite = 0
+          _lastFailedEditPath = null  // Clear — successful write
+        } else if (WRITE_TOOLS.has(fnName) && isError) {
+          // Fix #1 & #2: A failed write attempt (e.g. old_string not found) shows
+          // the agent IS trying to write — it just needs to re-read the file to get
+          // the correct content. Reset the counter to allow the re-read, and track
+          // the target path so it's exempt from future read blocks.
+          const editTarget = fnArgs.path || fnArgs.file || null
+          if (editTarget) {
+            _lastFailedEditPath = editTarget
+            _editAttemptedPaths.add(editTarget)
+          }
+          // Reduce counter significantly — the agent demonstrated write intent
+          consecutiveReadsWithoutWrite = Math.max(0, consecutiveReadsWithoutWrite - 4)
         }
         // Escalating enforcement — gets progressively more forceful
         if (consecutiveReadsWithoutWrite === 3) {
