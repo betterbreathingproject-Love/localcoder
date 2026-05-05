@@ -1721,14 +1721,18 @@ async function sendAgentMode(prompt, opts = {}) {
       }
       case 'user-injection': {
         // A mid-run user message was injected into the agent's turn loop.
-        // Show it as a user bubble so the conversation stays readable.
+        // Show it inline in the response block so the conversation stays sequential.
         if (ev.content) {
-          const out = document.getElementById('agentOutput')
-          out.insertAdjacentHTML('beforeend',
-            `<div class="msg-user" style="opacity:0.85;border-left:2px solid var(--blue)">
+          const injectionHtml = `<div class="msg-user" style="opacity:0.85;border-left:2px solid var(--blue)">
               <div class="msg-user-label" style="color:var(--blue)">You (injected)</div>
               ${esc(ev.content)}
-            </div>`)
+            </div>`
+          const actEl = document.getElementById(respId + '-activity')
+          if (actEl) {
+            actEl.insertAdjacentHTML('beforebegin', injectionHtml)
+          } else {
+            document.getElementById('agentOutput').insertAdjacentHTML('beforeend', injectionHtml)
+          }
           scrollOutput()
         }
         break
@@ -2481,12 +2485,16 @@ async function sendAgentMode(prompt, opts = {}) {
               }
               case 'user-injection': {
                 if (ev.content) {
-                  const out = document.getElementById('agentOutput')
-                  out.insertAdjacentHTML('beforeend',
-                    `<div class="msg-user" style="opacity:0.85;border-left:2px solid var(--blue)">
+                  const injHtml = `<div class="msg-user" style="opacity:0.85;border-left:2px solid var(--blue)">
                       <div class="msg-user-label" style="color:var(--blue)">You (injected)</div>
                       ${esc(ev.content)}
-                    </div>`)
+                    </div>`
+                  const actEl2 = document.getElementById(orchTaskBlockId + '-activity')
+                  if (actEl2) {
+                    actEl2.insertAdjacentHTML('beforebegin', injHtml)
+                  } else {
+                    document.getElementById('agentOutput').insertAdjacentHTML('beforeend', injHtml)
+                  }
                   scrollOutput()
                 }
                 break
@@ -3105,7 +3113,16 @@ function renderAskUserCard(question, options, respId) {
     ${parsedOptions.length === 0 ? `<div class="ask-user-chips"><button class="ask-user-chip ask-user-chip-other" data-card="${cardId}" onclick="window._askUserShowCustom(this.dataset.card)">Reply…</button></div>` : ''}
   </div>`
 
-  out.insertAdjacentHTML('beforeend', html)
+  // Insert inside the response block (before the activity indicator) so the
+  // question and reply stay inline with the agent's output sequence.
+  const respBlock = respId && document.getElementById(respId)
+  const activityEl = respId && document.getElementById(respId + '-activity')
+  if (respBlock && activityEl) {
+    activityEl.insertAdjacentHTML('beforebegin', html)
+  } else {
+    // Fallback: append to output if no response block context
+    out.insertAdjacentHTML('beforeend', html)
+  }
   // Store options by cardId so _askUserPickIdx can look them up
   window._askUserOptions[cardId] = parsedOptions
   scrollOutput()
@@ -5129,12 +5146,16 @@ async function _launchOrchestrator(tasksPath, taskCount) {
       }
       case 'user-injection': {
         if (ev.content) {
-          const out = document.getElementById('agentOutput')
-          out.insertAdjacentHTML('beforeend',
-            `<div class="msg-user" style="opacity:0.85;border-left:2px solid var(--blue)">
+          const injHtml3 = `<div class="msg-user" style="opacity:0.85;border-left:2px solid var(--blue)">
               <div class="msg-user-label" style="color:var(--blue)">You (injected)</div>
               ${esc(ev.content)}
-            </div>`)
+            </div>`
+          const actEl3 = orchTaskBlockId && document.getElementById(orchTaskBlockId + '-activity')
+          if (actEl3) {
+            actEl3.insertAdjacentHTML('beforebegin', injHtml3)
+          } else {
+            document.getElementById('agentOutput').insertAdjacentHTML('beforeend', injHtml3)
+          }
           scrollOutput()
         }
         break
