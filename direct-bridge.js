@@ -2900,11 +2900,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
     finalPrompt += prompt + imageContext
 
-    // When the user interrupted with an image + task intent and there's prior
-    // conversation history, instruct the agent to fix the reported issue then
-    // offer to resume the previous work.
-    if (images && images.length > 0 && imageContext && conversationHistory && conversationHistory.length > 0) {
-      finalPrompt += '\n\nIMPORTANT: After you fix the issue shown in the image, ask the user: "Should we carry on with the previous work, or do you want help with something else?"'
+    // When the user interrupted a previous task (conversation history exists)
+    // and sent a new message (with or without images), instruct the agent to
+    // address the new request then offer to resume the previous work.
+    if (conversationHistory && conversationHistory.length > 0) {
+      finalPrompt += '\n\nIMPORTANT: After you address the user\'s request, ask: "Should we carry on with the previous work, or do you want help with something else?"'
     }
 
     const messages = [
