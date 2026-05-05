@@ -1752,6 +1752,18 @@ async function sendAgentMode(prompt, opts = {}) {
         // Keep the latest segment in allTextSegments (last entry = current turn)
         if (allTextSegments.length === 0) allTextSegments.push(ev.text)
         else allTextSegments[allTextSegments.length - 1] = ev.text
+        // Collapse thinking box when text generation starts (the "disappear" part)
+        { const thinkElFade = document.getElementById(respId+'-think')
+          if (thinkElFade && (thinkElFade.classList.contains('think-active') || thinkElFade.classList.contains('think-entering'))) {
+            thinkElFade.classList.remove('think-active', 'think-entering')
+            thinkElFade.removeAttribute('open')
+            thinkElFade.classList.add('think-fading')
+            thinkElFade.addEventListener('animationend', () => {
+              thinkElFade.classList.remove('think-fading')
+              thinkElFade.classList.add('think-collapsed')
+            }, { once: true })
+          }
+        }
         // Extract <think> content from text-delta and route to thinking box
         const thinkContent = extractThinking(lastText)
         if (thinkContent) {
@@ -1768,15 +1780,46 @@ async function sendAgentMode(prompt, opts = {}) {
       case 'thinking-delta':
         lastThinking = ev.text
         stopPromptProgress()
-        const thinkEl = document.getElementById(respId+'-think')
-        thinkEl.style.display = ''
-        document.getElementById(respId+'-think-body').textContent = lastThinking + '▌'
+        { const thinkEl = document.getElementById(respId+'-think')
+          thinkEl.style.display = ''
+          thinkEl.setAttribute('open', '')
+          // Animate entrance — only on first appearance
+          if (!thinkEl.classList.contains('think-active') && !thinkEl.classList.contains('think-entering')) {
+            thinkEl.classList.remove('think-fading', 'think-collapsed')
+            thinkEl.classList.add('think-entering')
+            thinkEl.addEventListener('animationend', () => {
+              thinkEl.classList.remove('think-entering')
+              thinkEl.classList.add('think-active')
+            }, { once: true })
+          } else if (thinkEl.classList.contains('think-collapsed') || thinkEl.classList.contains('think-fading')) {
+            // Re-entering thinking after a brief pause (multi-turn)
+            thinkEl.classList.remove('think-fading', 'think-collapsed')
+            thinkEl.classList.add('think-entering')
+            thinkEl.addEventListener('animationend', () => {
+              thinkEl.classList.remove('think-entering')
+              thinkEl.classList.add('think-active')
+            }, { once: true })
+          }
+          document.getElementById(respId+'-think-body').textContent = lastThinking + '▌'
+        }
         setActivity('🧠 Reasoning <span class="activity-dot">●</span>')
         updateAgentStatsBar({ state: 'thinking', inputTokens, outputTokens: tokenCount, activity: 'Reasoning...' })
         break
       case 'tool-delta': {
         // Live streaming preview of tool call arguments as they're generated
         stopPromptProgress()
+        // Collapse thinking box when tool generation starts
+        { const thinkElFade2 = document.getElementById(respId+'-think')
+          if (thinkElFade2 && (thinkElFade2.classList.contains('think-active') || thinkElFade2.classList.contains('think-entering'))) {
+            thinkElFade2.classList.remove('think-active', 'think-entering')
+            thinkElFade2.removeAttribute('open')
+            thinkElFade2.classList.add('think-fading')
+            thinkElFade2.addEventListener('animationend', () => {
+              thinkElFade2.classList.remove('think-fading')
+              thinkElFade2.classList.add('think-collapsed')
+            }, { once: true })
+          }
+        }
         const toolName = ev.name || ''
         const args = ev.argumentsSoFar || ''
 

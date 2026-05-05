@@ -5902,7 +5902,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       let finishReason = null
       let buf = ''
       let _lastToolDeltaTime = 0
-      let reasoningContent = null  // Captured from server's reasoning_content delta
+      let reasoningContent = ''  // Accumulated from server's reasoning_content deltas
 
       // Client-side prompt size guard: estimate tokens and trim if over budget
       // Use calibrated maxInputTokens + small headroom as the hard cap
@@ -6065,11 +6065,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               this.send('qwen-event', { type: 'text-delta', text: displayText })
             }
 
-            // Reasoning content — preserve for conversation history continuity.
-            // The server sends this as a dedicated chunk so the model retains
-            // its chain-of-thought across tool loop iterations.
+            // Reasoning content — stream to renderer and preserve for conversation
+            // history continuity. The server sends this incrementally so we accumulate
+            // and emit thinking-delta events so the UI can show the chain-of-thought.
             if (delta?.reasoning_content) {
-              reasoningContent = delta.reasoning_content
+              reasoningContent += delta.reasoning_content
+              this.send('qwen-event', { type: 'thinking-delta', text: reasoningContent })
             }
 
             // Tool calls in delta (streaming tool calls)
@@ -6144,7 +6145,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               })
             }
           }
-          resolve({ text: accumulated, toolCalls, usage, finishReason, reasoningContent })
+          resolve({ text: accumulated, toolCalls, usage, finishReason, reasoningContent: reasoningContent || null })
         })
 
         res.on('error', (err) => {
