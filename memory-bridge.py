@@ -1688,7 +1688,9 @@ async def extract(req: ExtractRequest):
                             f"Format: [{{\"s\": \"subject\", \"p\": \"predicate\", \"o\": \"object\"}}]\n\n"
                             f"Text: {filtered_message[:500]}\n\nTriples:"
                         )
-                        response = _extract_generate(prompt, max_tokens=200)
+                        response = await _asyncio.get_event_loop().run_in_executor(
+                            None, lambda: _extract_generate(prompt, max_tokens=200)
+                        )
                         import json
                         # Extract JSON array from response
                         json_match = re.search(r'\[.*?\]', response, re.DOTALL)
@@ -1829,7 +1831,9 @@ async def session_enrich(req: SessionEnrichRequest):
                     f"Session: {session_text[:500]}\n\n"
                     f"Output as JSON: {{\"topics\": \"...\", \"description\": \"...\", \"category\": \"...\"}}"
                 )
-                response = _extract_generate(prompt, max_tokens=150)
+                response = await _asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _extract_generate(prompt, max_tokens=150)
+                )
                 import json
                 json_match = re.search(r'\{.*?\}', response, re.DOTALL)
                 if json_match:
@@ -1924,7 +1928,9 @@ async def session_crystallize(req: SessionCrystallizeRequest):
                     f"Session: {session_text[:800]}\n\n"
                     f"Output as JSON: {{\"summary\": \"...\", \"outcomes\": \"...\", \"lessons\": \"...\"}}"
                 )
-                response = _extract_generate(prompt, max_tokens=200)
+                response = await _asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _extract_generate(prompt, max_tokens=200)
+                )
                 json_match = re.search(r'\{.*?\}', response, re.DOTALL)
                 if json_match:
                     llm_data = json.loads(json_match.group(0))

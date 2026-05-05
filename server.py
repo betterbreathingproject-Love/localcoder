@@ -1485,7 +1485,28 @@ async def _route_vision_request(req: ChatRequest):
     Extracts all images from the request, calls memory-bridge's _handle_vision
     for each image, then returns a standard OpenAI chat completion response.
     Falls back gracefully if the fast model isn't loaded.
+    
+    Acquires the inference semaphore to properly serialize with main model
+    inference — prevents the next main model request from starting while
+    vision is still using the GPU (which would block on _metal_lock and
+    cause client-side timeouts).
     """
+    import uuid as _uuid
+    import base64 as _b64
+
+    # Acquire inference semaphore so the main model waits for vision to finish
+    # before starting its next turn. Without this, the main model's request
+    # arrives while vision holds _metal_lock → blocks → client times out.
+    sem = _get_inference_semaphore()
+    await sem.acquire()
+    try:
+        return await _route_vision_request_inner(req)
+    finally:
+        sem.release()
+
+
+async def _route_vision_request_inner(req: ChatRequest):
+    """Inner implementation of vision routing (called under semaphore)."""
     import uuid as _uuid
     import base64 as _b64
 
@@ -1794,7 +1815,15 @@ async def chat_completions(req: ChatRequest):
             # is closed/garbage-collected, the semaphore stays held until Metal
             # inference actually finishes — preventing concurrent Metal operations
             # that crash the process.
-            await sem.acquire()
+            print(f"[inference] Waiting for semaphore (value={sem._value})...", file=sys.stderr, flush=True)
+            try:
+                await asyncio.wait_for(sem.acquire(), timeout=120.0)
+            except asyncio.TimeoutError:
+                print(f"[inference] ⚠️ Semaphore stuck for 120s — force-releasing and retrying", file=sys.stderr, flush=True)
+                # Force-release the stuck semaphore so inference can proceed
+                sem.release()
+                await sem.acquire()
+            print(f"[inference] Semaphore acquired, starting inference", file=sys.stderr, flush=True)
 
             def run_stream():
                 import threading as _thr
