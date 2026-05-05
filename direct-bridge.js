@@ -5230,8 +5230,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               if (fnName === 'read_file') {
                 if (_wasFullRead) {
                   content = lines.slice(0, cutLine).join('\n') +
-                    `\n\n[TRUNCATED — showing lines 1-${cutLine} of ${lines.length} total. The ENTIRE file was read but trimmed to fit context. ` +
-                    `Do NOT call read_file again. Use search_files to find specific patterns, or edit_file directly with what is shown above.]`
+                    `\n\n[TRUNCATED — showing lines 1-${cutLine} of ${lines.length} total. ` +
+                    `The file is too large to fit in context at once. ` +
+                    `Use read_file with start_line=${cutLine + 1} to read the next section, or use search_files to find specific patterns.]`
                 } else {
                   content = lines.slice(0, cutLine).join('\n') +
                     `\n\n... [file truncated — showing lines 1-${cutLine} of ~${lines.length} total. ` +
@@ -5270,14 +5271,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               // Count total lines so the agent knows how to page through the file
               const totalLines = content.split('\n').length
               const shownLines = content.slice(0, effectiveLimit).split('\n').length
-              // If the file was fully read (not a partial/paged read), do NOT tell
-              // the model to call read_file again — that creates a truncation loop.
-              // Instead, tell it the content was trimmed for context space and suggest
-              // using search_files or edit_file with the knowledge it already has.
               if (_wasFullRead) {
                 content = content.slice(0, effectiveLimit) +
-                  `\n\n[TRUNCATED — original length ~${totalLines} lines. The ENTIRE file was read successfully but trimmed to fit the context window. ` +
-                  `Do NOT call read_file again on this file — you already have the content. Use search_files to find specific patterns, or work with what is shown above.]`
+                  `\n\n[TRUNCATED — showing ~${shownLines} of ${totalLines} lines. ` +
+                  `The file is too large to fit in context at once. ` +
+                  `Use read_file with start_line=${shownLines + 1} to read the next section, or use search_files to find specific patterns.]`
               } else {
                 content = content.slice(0, effectiveLimit) +
                   `\n\n... [file truncated — showing lines 1-${shownLines} of ~${totalLines} total. ` +
