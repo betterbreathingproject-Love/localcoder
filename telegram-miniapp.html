@@ -405,11 +405,29 @@ async function pollStatus() {
       if (data.logs.length > state.logs.length) {
         const newLogs = data.logs.slice(state.logs.length);
         for (const l of newLogs) {
-          state.logs.push({ time: l.time || Date.now(), text: l.text, type: l.logType || l.type || 'info' });
+          // Check if this is a media entry (screenshot/image)
+          if (l.type === 'media') {
+            const src = l.src || l.data;
+            if (src) {
+              state.media.push({ type: l.mediaType || 'image', src, time: l.time || Date.now() });
+              if (state.media.length > 50) state.media.shift();
+            }
+          } else {
+            state.logs.push({ time: l.time || Date.now(), text: l.text, type: l.logType || l.type || 'info' });
+          }
         }
       } else if (state.logs.length === 0) {
-        // First poll — take all logs
-        state.logs = data.logs.map(l => ({ time: l.time || Date.now(), text: l.text, type: l.logType || l.type || 'info' }));
+        // First poll — take all logs, separating media
+        for (const l of data.logs) {
+          if (l.type === 'media') {
+            const src = l.src || l.data;
+            if (src) {
+              state.media.push({ type: l.mediaType || 'image', src, time: l.time || Date.now() });
+            }
+          } else {
+            state.logs.push({ time: l.time || Date.now(), text: l.text, type: l.logType || l.type || 'info' });
+          }
+        }
       }
     }
 
@@ -497,6 +515,19 @@ function handleMessage(msg) {
     case 'screenshot':
       state.screenshot = msg.data; // base64 or URL
       state.screenshotLoading = false;
+      // Also add to media gallery
+      if (msg.data) {
+        const src = msg.data.startsWith('data:') ? msg.data : 'data:image/png;base64,' + msg.data;
+        state.media.push({ type: 'image', src, time: Date.now() });
+        if (state.media.length > 50) state.media.shift();
+      }
+      break;
+    case 'media':
+      if (msg.src || msg.data) {
+        const src = msg.src || msg.data;
+        state.media.push({ type: msg.mediaType || 'image', src, time: msg.time || Date.now() });
+        if (state.media.length > 50) state.media.shift();
+      }
       break;
     case 'input_request':
       state.logs.push({ time: Date.now(), text: `❓ Agent asks: ${msg.question}`, type: 'info' });
@@ -726,13 +757,31 @@ function renderMonitorTab() {
 
   const screenshotSection = `
     <div class="section">
-      <div class="section-label">Browser</div>
+      <div class="section-label">📸 Screenshots & Media${state.media.length ? ' (' + state.media.length + ')' : ''}</div>
       <div class="screenshot-container">
         <button class="btn btn-secondary" id="btn-screenshot" ${state.screenshotLoading ? 'disabled' : ''}>
           ${state.screenshotLoading ? '<span class="spinner"></span>' : '📸'} Capture Screenshot
         </button>
-        ${state.screenshot ? `<img class="screenshot-img" src="${state.screenshot}" alt="Screenshot">` :
-          `<div class="screenshot-placeholder">No screenshot yet</div>`}
+        ${state.media.length > 0 ? `
+          <div class="media-gallery">
+            ${[...state.media].reverse().map((m, i) => {
+              const idx = state.media.length - 1 - i;
+              const timeStr = m.time ? formatTime(m.time) : '';
+              if (m.type === 'video') {
+                return `<div class="media-thumb" data-media-idx="${idx}">
+                  <video src="${esc(m.src)}" muted playsinline preload="metadata"></video>
+                  <div class="media-thumb-play"><div class="media-thumb-play-icon">▶</div></div>
+                  <div class="media-thumb-time">${esc(timeStr)}</div>
+                </div>`;
+              }
+              return `<div class="media-thumb" data-media-idx="${idx}">
+                <img src="${esc(m.src)}" alt="Screenshot" loading="lazy">
+                <div class="media-thumb-time">${esc(timeStr)}</div>
+              </div>`;
+            }).join('')}
+          </div>` : (state.screenshot
+            ? `<img class="screenshot-img" src="${state.screenshot}" alt="Screenshot" data-media-idx="${state.media.length - 1}">`
+            : `<div class="screenshot-placeholder">No screenshots yet — capture one or wait for the agent to take one</div>`)}
       </div>
     </div>`;
 
@@ -940,6 +989,11 @@ function bindEvents() {
   const btnScreenshot = document.getElementById('btn-screenshot');
   if (btnScreenshot) btnScreenshot.onclick = requestScreenshot;
 
+  // Media gallery — open lightbox on click
+  document.querySelectorAll('[data-media-idx]').forEach(el => {
+    el.onclick = () => { openLightbox(parseInt(el.dataset.mediaIdx)); };
+  });
+
   // Inject prompt
   const btnInject = document.getElementById('btn-inject');
   const injectInput = document.getElementById('inject-input');
@@ -1054,6 +1108,48 @@ function showToast(msg) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ── Lightbox ──────────────────────────────────────────
+function openLightbox(idx) {
+  if (idx < 0 || idx >= state.media.length) return;
+  state.lightboxIdx = idx;
+  const m = state.media[idx];
+  const lb = document.getElementById('lightbox');
+  const ct = document.getElementById('lightbox-content');
+  const nav = document.getElementById('lightbox-nav');
+
+  if (m.type === 'video') {
+    ct.innerHTML = `<video src="${esc(m.src)}" controls autoplay playsinline style="max-width:95vw;max-height:85vh;border-radius:10px"></video>`;
+  } else {
+    ct.innerHTML = `<img src="${esc(m.src)}" alt="Screenshot">`;
+  }
+
+  // Navigation buttons
+  const hasPrev = idx > 0;
+  const hasNext = idx < state.media.length - 1;
+  nav.innerHTML = `
+    ${hasPrev ? '<button class="lightbox-nav-btn" id="lb-prev">← Prev</button>' : ''}
+    <span style="color:rgba(255,255,255,.5);font-size:11px;">${idx + 1} / ${state.media.length}</span>
+    ${hasNext ? '<button class="lightbox-nav-btn" id="lb-next">Next →</button>' : ''}
+  `;
+
+  lb.classList.add('open');
+
+  // Bind nav buttons
+  const prevBtn = document.getElementById('lb-prev');
+  const nextBtn = document.getElementById('lb-next');
+  if (prevBtn) prevBtn.onclick = (e) => { e.stopPropagation(); openLightbox(idx - 1); };
+  if (nextBtn) nextBtn.onclick = (e) => { e.stopPropagation(); openLightbox(idx + 1); };
+
+  if (tg) tg.HapticFeedback?.impactOccurred('light');
+}
+
+function closeLightbox(e) {
+  if (e && e.target !== document.getElementById('lightbox') && !e.target.classList.contains('lightbox-close')) return;
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightbox-content').innerHTML = '';
+  state.lightboxIdx = -1;
 }
 
 // ── Disconnected Overlay ──────────────────────────────
