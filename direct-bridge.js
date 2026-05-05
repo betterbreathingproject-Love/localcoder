@@ -2810,6 +2810,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           descriptions.push(`[Image ${i + 1}: ${img.name}]\n${desc}`)
         }
         imageContext = `\n\nThe user attached image(s). Here is what the vision model sees:\n\n${descriptions.join('\n\n')}`
+        // Show the vision analysis inline in chat so the user sees what the model detected
+        this.send('qwen-event', { type: 'vision-analysis', text: descriptions.join('\n\n') })
       } catch (err) {
         imageContext = `\n\n(The user attached images but vision analysis failed: ${err.message})`
       }

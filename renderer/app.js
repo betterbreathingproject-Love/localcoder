@@ -2369,6 +2369,23 @@ async function sendAgentMode(prompt, opts = {}) {
         updateAgentStatsBar({ state: 'processing', inputTokens, outputTokens: outputTokens || tokenCount, toolCount: _agentToolCount, activity: ev.subtype === 'debug' ? ev.data : ev.subtype })
         scrollOutput()
         break
+      case 'vision-analysis': {
+        // Show the vision model's analysis inline in chat so the user sees what was detected
+        const toolsEl = document.getElementById(respId+'-tools')
+        if (toolsEl && ev.text) {
+          toolsEl.insertAdjacentHTML('beforeend',
+            `<div class="tool-block done" style="border-left:3px solid var(--accent2)">` +
+            `<div class="tool-header"><span class="tool-icon">👁️</span>` +
+            `<div class="tool-header-info"><span class="tool-name">Vision Analysis</span>` +
+            `<span class="tool-name-raw">fast vision model</span></div>` +
+            `<span class="tool-status done">✓ Done</span></div>` +
+            `<div class="tool-result-body" style="max-height:200px;overflow-y:auto;padding:8px;font-size:12px;color:var(--fg);white-space:pre-wrap">${esc(ev.text)}</div>` +
+            `</div>`)
+        }
+        setActivity('👁️ Vision analysis complete <span class="activity-dot">●</span>')
+        scrollOutput()
+        break
+      }
       case 'compaction-stats':
         // Only update the badge for conversation-level compaction, not per-tool-result compressions
         if (!ev.data.source || ev.data.source !== 'tool-result') {
@@ -2851,6 +2868,25 @@ async function sendAgentMode(prompt, opts = {}) {
                 updateAgentStatsBar({ state: 'processing', inputTokens, outputTokens: outputTokens || tokenCount, toolCount: _agentToolCount, activity: ev.subtype === 'debug' ? ev.data : ev.subtype })
                 scrollOutput()
                 break
+              case 'vision-analysis': {
+                // Show vision analysis inline in orchestrator task block
+                if (orchTaskBlockId) {
+                  const toolsEl = document.getElementById(orchTaskBlockId + '-tools')
+                  if (toolsEl && ev.text) {
+                    toolsEl.insertAdjacentHTML('beforeend',
+                      `<div class="tool-block done" style="border-left:3px solid var(--accent2)">` +
+                      `<div class="tool-header"><span class="tool-icon">👁️</span>` +
+                      `<div class="tool-header-info"><span class="tool-name">Vision Analysis</span>` +
+                      `<span class="tool-name-raw">fast vision model</span></div>` +
+                      `<span class="tool-status done">✓ Done</span></div>` +
+                      `<div class="tool-result-body" style="max-height:200px;overflow-y:auto;padding:8px;font-size:12px;color:var(--fg);white-space:pre-wrap">${esc(ev.text)}</div>` +
+                      `</div>`)
+                  }
+                }
+                setOrchActivity('👁️ Vision analysis complete <span class="activity-dot">●</span>')
+                scrollOutput()
+                break
+              }
               case 'compaction-stats':
                 if (!ev.data.source || ev.data.source !== 'tool-result') {
                   _lastCompactionStats = ev.data
@@ -5709,6 +5745,25 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         updateAgentStatsBar({ state: 'processing', inputTokens, outputTokens: outputTokens || tokenCount, toolCount: _agentToolCount, activity: ev.subtype === 'debug' ? ev.data : ev.subtype })
         scrollOutput()
         break
+      case 'vision-analysis': {
+        // Show vision analysis inline in the task block (third handler — direct qwen-event path)
+        if (orchTaskBlockId) {
+          const toolsEl = document.getElementById(orchTaskBlockId + '-tools')
+          if (toolsEl && ev.text) {
+            toolsEl.insertAdjacentHTML('beforeend',
+              `<div class="tool-block done" style="border-left:3px solid var(--accent2)">` +
+              `<div class="tool-header"><span class="tool-icon">👁️</span>` +
+              `<div class="tool-header-info"><span class="tool-name">Vision Analysis</span>` +
+              `<span class="tool-name-raw">fast vision model</span></div>` +
+              `<span class="tool-status done">✓ Done</span></div>` +
+              `<div class="tool-result-body" style="max-height:200px;overflow-y:auto;padding:8px;font-size:12px;color:var(--fg);white-space:pre-wrap">${esc(ev.text)}</div>` +
+              `</div>`)
+          }
+        }
+        setOrchActivity('👁️ Vision analysis complete <span class="activity-dot">●</span>')
+        scrollOutput()
+        break
+      }
       case 'compaction-stats':
         if (!ev.data.source || ev.data.source !== 'tool-result') {
           _lastCompactionStats = ev.data
