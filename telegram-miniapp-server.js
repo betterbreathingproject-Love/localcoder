@@ -422,7 +422,13 @@ class MiniAppServer extends EventEmitter {
     })
 
     ctrl.on('agent:screenshot', (data) => {
-      this._broadcast({ type: 'screenshot', data: data.url || data.base64 || null })
+      const src = data.url || data.base64 || null
+      if (src) {
+        const mediaMsg = { type: 'media', mediaType: 'image', src, time: Date.now() }
+        this._appendLog(mediaMsg)
+        this._broadcast(mediaMsg)
+      }
+      this._broadcast({ type: 'screenshot', data: src })
     })
 
     ctrl.on('agent:input_request', (data) => {
@@ -499,10 +505,20 @@ class MiniAppServer extends EventEmitter {
         const errText = typeof content === 'string' ? content.slice(0, 200) : String(content).slice(0, 200)
         log = { type: 'log', text: `❌ Tool error: ${errText}`, logType: 'error', time: Date.now() }
       } else {
-        // Show a useful summary of the result
+        // Check for inline screenshot/image data (from browser_screenshot, desktop_screenshot)
         const text = typeof content === 'string' ? content : String(content)
-        const preview = text.length > 150 ? text.slice(0, 150) + '…' : text
-        if (preview) log = { type: 'log', text: `✓ ${preview}`, logType: 'result', time: Date.now() }
+        const imgMatch = text.match(/data:(image\/[^;]+);base64,([A-Za-z0-9+/=]+)/)
+        if (imgMatch) {
+          // Broadcast as a media event so the monitor can display it
+          const mediaMsg = { type: 'media', mediaType: 'image', src: `data:${imgMatch[1]};base64,${imgMatch[2]}`, time: Date.now() }
+          this._appendLog(mediaMsg)
+          this._broadcast(mediaMsg)
+          log = { type: 'log', text: '📸 Screenshot captured', logType: 'result', time: Date.now() }
+        } else {
+          // Show a useful summary of the result
+          const preview = text.length > 150 ? text.slice(0, 150) + '…' : text
+          if (preview) log = { type: 'log', text: `✓ ${preview}`, logType: 'result', time: Date.now() }
+        }
       }
 
     // ── Session lifecycle ────────────────────────────────────────────────

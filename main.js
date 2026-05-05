@@ -835,12 +835,22 @@ function createWindow() {
   // When a job runs via the main app (shared bridge), ask_user uses
   // WindowInputRequester. Telegram users can also reply by sending
   // a plain text message — forward it to resolveReply.
+  // If no ask_user is pending but the agent is running, inject the message
+  // so the user can steer the agent from Telegram.
   telegramBot.on('message', ({ chatId, text }) => {
     if (chatId !== telegramBot.getPairedChatId()) return
-    // Only forward if there's a pending ask_user request
+    if (!text) return
+    // Priority 1: resolve pending ask_user request
     if (_windowInputRequester.hasPendingRequest()) {
       console.log('[telegram→ask_user] forwarding reply:', text?.slice(0, 80))
       _windowInputRequester.resolveReply(text || '')
+      return
+    }
+    // Priority 2: inject into running agent as a follow-up instruction
+    if (qwenBridge && qwenBridge._running && typeof qwenBridge.inject === 'function') {
+      console.log('[telegram→inject] injecting message:', text?.slice(0, 80))
+      qwenBridge.inject(text)
+      telegramBot.sendMessage(chatId, `💬 Injected: ${text.slice(0, 100)}`).catch(() => {})
     }
   })
 
@@ -1054,6 +1064,9 @@ function createWindow() {
 
             // Listen to the events the bridge emits via sinkBus
             sinkBus.on('qwen-event', logHandler)
+
+            // Notify the renderer so it sets up the UI to mirror this remote run
+            mainWindow?.webContents.send('remote-run-start', { prompt, source: 'miniapp' })
 
             // Run using the shared bridge — shows in main app exactly like user typed it
             qwenBridge.run({ prompt, cwd, permissionMode: 'auto-edit' })

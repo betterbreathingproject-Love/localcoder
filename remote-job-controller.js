@@ -86,6 +86,11 @@ class RemoteJobController extends EventEmitter {
    * @private
    */
   async _runWithSharedBridge(prompt) {
+    // Notify the renderer so it sets up the UI to mirror this run
+    if (this._mainWindow && !this._mainWindow.isDestroyed()) {
+      this._mainWindow.webContents.send('remote-run-start', { prompt, source: 'telegram' })
+    }
+
     // Mirror qwen-event from the main window to Telegram
     // Note: final results are mirrored by the persistent listener in main.js,
     // so here we only forward intermediate status like tool activity.

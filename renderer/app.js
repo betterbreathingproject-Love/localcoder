@@ -191,6 +191,15 @@ window.addEventListener('DOMContentLoaded', async () => {
       : `Telegram send failed: ${reason}`
     showToast(msg, 'error', 8000)
   })
+
+  // Listen for remote-run-start events (Telegram/MiniApp triggered jobs)
+  // This sets up the UI to mirror the agent run on the desktop
+  window.app.onRemoteRunStart?.(({ prompt, source }) => {
+    if (isGenerating) return // already running — don't double-start
+    const label = source === 'telegram' ? '📱 Telegram' : '🌐 Remote'
+    appendMsg('system', `${label}: ${esc(prompt)}`)
+    sendAgentMode(prompt, { skipRun: true, skipUserMsg: true, historyLabel: `[${label}] ${prompt}` })
+  })
 })
 
 // ── panels ────────────────────────────────────────────────────────────────────
@@ -3277,17 +3286,21 @@ async function sendAgentMode(prompt, opts = {}) {
   const maxHist = (projectSettings?.maxHistoryMessages || 40)
   const historyForAgent = conversationHistory.slice(-maxHist).map(m => ({ role: m.role, content: m.content }))
 
-  window.app.qwenRun({
-    prompt,
-    cwd: currentProject || undefined,
-    permissionMode: permMode,
-    agentRole: agentRole,
-    model: loadedModelId,
-    images: sentImages.length > 0 ? sentImages : undefined,
-    conversationHistory: historyForAgent.length > 0 ? historyForAgent : undefined,
-    samplingParams: getSamplingParams(),
-    taskGraphPath: currentTasksPath || undefined,
-  })
+  // If skipRun is set, the main process will call qwenBridge.run() directly
+  // (e.g. Telegram-initiated jobs that mirror to the desktop UI)
+  if (!opts.skipRun) {
+    window.app.qwenRun({
+      prompt,
+      cwd: currentProject || undefined,
+      permissionMode: permMode,
+      agentRole: agentRole,
+      model: loadedModelId,
+      images: sentImages.length > 0 ? sentImages : undefined,
+      conversationHistory: historyForAgent.length > 0 ? historyForAgent : undefined,
+      samplingParams: getSamplingParams(),
+      taskGraphPath: currentTasksPath || undefined,
+    })
+  }
 }
 
 /**

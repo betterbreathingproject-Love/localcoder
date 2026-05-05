@@ -575,6 +575,91 @@ a { color: var(--acc); text-decoration: none; }
   background:rgba(124,92,208,.08); border:1px solid rgba(124,92,208,.2);
   font-size:11px; color:var(--txt2); white-space:pre-wrap; line-height:1.5;
 }
+
+/* ── Monitor Tab ─────────────────────────────────────── */
+.monitor-status-bar {
+  display:flex; align-items:center; gap:8px; padding:8px 12px;
+  background:var(--bgc); border:1px solid var(--bdr); border-radius:var(--rs);
+  margin-bottom:12px;
+}
+.monitor-dot {
+  width:8px; height:8px; border-radius:50%; flex-shrink:0;
+}
+.monitor-dot.connected { background:var(--grn); box-shadow:0 0 6px rgba(72,187,120,.5); }
+.monitor-dot.disconnected { background:var(--red); }
+.monitor-dot.running { background:var(--grn); animation:pulse-dot 1.5s infinite; }
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
+.monitor-status-text { font-size:12px; color:var(--txt2); flex:1; }
+.monitor-status-badge {
+  font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px;
+  text-transform:uppercase; letter-spacing:.5px;
+}
+.monitor-status-badge.idle { background:rgba(255,255,255,.06); color:var(--txt3); }
+.monitor-status-badge.running { background:rgba(72,187,120,.12); color:var(--grn); }
+.monitor-status-badge.completed { background:rgba(74,158,255,.12); color:var(--acc); }
+.monitor-status-badge.failed { background:rgba(245,101,101,.12); color:var(--red); }
+
+.monitor-media-grid {
+  display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px;
+  margin-bottom:16px;
+}
+.monitor-media-item {
+  border-radius:var(--rs); overflow:hidden; border:1px solid var(--bdr);
+  background:var(--bg3); cursor:pointer; transition:all .2s;
+}
+.monitor-media-item:active { transform:scale(.97); }
+.monitor-media-item img, .monitor-media-item video {
+  width:100%; aspect-ratio:16/10; object-fit:cover; display:block;
+}
+.monitor-media-time {
+  padding:4px 8px; font-size:9px; color:var(--txt3); text-align:center;
+  background:var(--bgc);
+}
+
+.monitor-feed { display:flex; flex-direction:column; gap:4px; }
+.monitor-log-entry {
+  padding:6px 10px; border-radius:var(--rx); font-size:11px; line-height:1.5;
+  word-break:break-word; border-left:3px solid transparent;
+}
+.monitor-log-entry.info { background:rgba(255,255,255,.03); border-left-color:var(--acc); color:var(--txt2); }
+.monitor-log-entry.tool { background:rgba(124,92,208,.06); border-left-color:var(--pur); color:var(--txt2); }
+.monitor-log-entry.result { background:rgba(72,187,120,.06); border-left-color:var(--grn); color:var(--txt2); }
+.monitor-log-entry.error { background:rgba(245,101,101,.06); border-left-color:var(--red); color:var(--red); }
+.monitor-log-time { font-size:9px; color:var(--txt3); margin-right:6px; }
+
+.monitor-actions {
+  display:flex; gap:8px; margin-bottom:12px;
+}
+.monitor-action-btn {
+  flex:1; padding:8px; border:1px solid var(--bdr); border-radius:var(--rx);
+  background:var(--bgc); color:var(--txt2); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all .2s; text-align:center;
+}
+.monitor-action-btn:active { transform:scale(.97); background:var(--bg3); }
+.monitor-action-btn.danger { border-color:rgba(245,101,101,.3); color:var(--red); }
+
+.monitor-inject-row {
+  display:flex; gap:8px; margin-bottom:12px;
+}
+.monitor-inject-input {
+  flex:1; padding:8px 12px; border-radius:20px;
+  background:var(--bgc); border:1px solid var(--bdr); color:var(--txt);
+  font-size:12px; font-family:inherit; outline:none;
+}
+.monitor-inject-input:focus { border-color:var(--acc); }
+.monitor-inject-input::placeholder { color:var(--txt3); }
+.monitor-inject-send {
+  width:36px; height:36px; border-radius:50%; border:none;
+  background:linear-gradient(135deg, var(--pur), var(--acc));
+  color:#fff; font-size:14px; cursor:pointer; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+}
+.monitor-inject-send:disabled { opacity:.4; cursor:not-allowed; }
+
+.monitor-section-title {
+  font-size:11px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.8px; color:var(--txt3); margin:12px 0 8px; padding-left:2px;
+}
 </style>
 </head>
 <body>
@@ -649,6 +734,12 @@ const S = {
   musicAudioEl: null,
   musicPlayPct: 0,
   musicRafId: null,
+  // Monitor tab state
+  monitorLogs: [],
+  monitorMedia: [],
+  monitorConnected: false,
+  monitorJobState: 'idle',
+  monitorJobId: null,
 };
 
 const API = window.location.origin;
@@ -757,6 +848,7 @@ function renderHeader() {
   const tabs = [
     {id:'create',icon:'✨',label:'Create'},
     {id:'chat',icon:'💬',label:'Chat'},
+    {id:'monitor',icon:'📡',label:'Monitor'},
     {id:'characters',icon:'👤',label:'Cast'},
     {id:'video',icon:'🎬',label:'Video'},
     {id:'music',icon:'🎵',label:'Music'},
@@ -782,6 +874,7 @@ function renderContent() {
   switch(S.tab) {
     case 'create': return renderCreate();
     case 'chat': return renderChat();
+    case 'monitor': return renderMonitor();
     case 'characters': return renderCharacters();
     case 'video': return renderVideo();
     case 'music': return renderMusic();
@@ -961,6 +1054,159 @@ function formatAssistantMsg(text, scenes) {
 }
 </script>
 <script>
+// ── Monitor Tab ───────────────────────────────────────────
+let _ws = null;
+let _wsReconnectTimer = null;
+
+function connectMonitorWS() {
+  if (_ws && _ws.readyState <= 1) return; // already open or connecting
+  const wsUrl = API.replace(/^http/, 'ws') + '/miniapp';
+  _ws = new WebSocket(wsUrl);
+
+  _ws.onopen = () => {
+    S.monitorConnected = true;
+    if (S.tab === 'monitor') render();
+  };
+
+  _ws.onclose = () => {
+    S.monitorConnected = false;
+    if (S.tab === 'monitor') render();
+    // Auto-reconnect after 3s
+    clearTimeout(_wsReconnectTimer);
+    _wsReconnectTimer = setTimeout(connectMonitorWS, 3000);
+  };
+
+  _ws.onerror = () => {
+    S.monitorConnected = false;
+  };
+
+  _ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      handleMonitorMessage(msg);
+    } catch {}
+  };
+}
+
+function handleMonitorMessage(msg) {
+  if (!msg) return;
+
+  if (msg.type === 'status') {
+    S.monitorJobState = msg.state || 'idle';
+    S.monitorJobId = msg.jobId || null;
+    // Populate initial logs
+    if (msg.logs && msg.logs.length && !S.monitorLogs.length) {
+      for (const l of msg.logs) {
+        if (l.type === 'media') {
+          S.monitorMedia.push(l);
+        } else {
+          S.monitorLogs.push(l);
+        }
+      }
+    }
+  } else if (msg.type === 'media') {
+    S.monitorMedia.push(msg);
+    if (S.monitorMedia.length > 50) S.monitorMedia.shift();
+  } else if (msg.type === 'screenshot') {
+    if (msg.data) {
+      const src = msg.data.startsWith('data:') ? msg.data : 'data:image/png;base64,' + msg.data;
+      S.monitorMedia.push({ type: 'media', mediaType: 'image', src, time: Date.now() });
+      if (S.monitorMedia.length > 50) S.monitorMedia.shift();
+    }
+  } else if (msg.type === 'log' || msg.type === 'tool_use') {
+    S.monitorLogs.push(msg);
+    if (S.monitorLogs.length > 100) S.monitorLogs.shift();
+  } else if (msg.type === 'job_started') {
+    S.monitorJobState = 'running';
+    S.monitorJobId = msg.jobId;
+    S.monitorLogs.push({ type: 'log', text: '▶ Job started' + (msg.prompt ? ': ' + msg.prompt : ''), logType: 'info', time: Date.now() });
+  } else if (msg.type === 'job_completed') {
+    S.monitorJobState = 'idle';
+    S.monitorLogs.push({ type: 'log', text: '✅ Job completed', logType: 'result', time: Date.now() });
+  } else if (msg.type === 'job_failed') {
+    S.monitorJobState = 'idle';
+    S.monitorLogs.push({ type: 'log', text: '❌ Job failed: ' + (msg.error || ''), logType: 'error', time: Date.now() });
+  } else if (msg.type === 'input_request') {
+    S.monitorLogs.push({ type: 'log', text: '❓ ' + (msg.question || 'Agent needs input'), logType: 'info', time: Date.now() });
+  }
+
+  if (S.tab === 'monitor') render();
+}
+
+function renderMonitor() {
+  // Connect WS if not already
+  connectMonitorWS();
+
+  const stateClass = S.monitorJobState === 'running' ? 'running' : (S.monitorJobState === 'completed' ? 'completed' : (S.monitorJobState === 'failed' ? 'failed' : 'idle'));
+  const dotClass = !S.monitorConnected ? 'disconnected' : (S.monitorJobState === 'running' ? 'running' : 'connected');
+
+  let html = `<div class="monitor-status-bar">
+    <div class="monitor-dot ${dotClass}"></div>
+    <div class="monitor-status-text">${S.monitorConnected ? 'Connected' : 'Disconnected'}</div>
+    <div class="monitor-status-badge ${stateClass}">${S.monitorJobState}</div>
+  </div>`;
+
+  // Action buttons
+  html += `<div class="monitor-actions">
+    <button class="monitor-action-btn" id="mon-screenshot">📸 Screenshot</button>
+    <button class="monitor-action-btn" id="mon-refresh">🔄 Refresh</button>
+    ${S.monitorJobState === 'running' ? '<button class="monitor-action-btn danger" id="mon-stop">⏹ Stop</button>' : ''}
+  </div>`;
+
+  // Inject prompt row
+  html += `<div class="monitor-inject-row">
+    <input class="monitor-inject-input" id="mon-inject-input" placeholder="Inject message to agent..." autocomplete="off">
+    <button class="monitor-inject-send" id="mon-inject-send">➤</button>
+  </div>`;
+
+  // Media gallery (screenshots & videos)
+  if (S.monitorMedia.length) {
+    html += '<div class="monitor-section-title">📸 Screenshots & Media (' + S.monitorMedia.length + ')</div>';
+    html += '<div class="monitor-media-grid">';
+    // Show most recent first
+    const mediaReversed = [...S.monitorMedia].reverse();
+    for (const m of mediaReversed) {
+      const timeStr = m.time ? new Date(m.time).toLocaleTimeString() : '';
+      if (m.mediaType === 'video') {
+        html += `<div class="monitor-media-item" data-lightbox-video="${esc(m.src)}">
+          <video src="${esc(m.src)}" muted playsinline preload="metadata"></video>
+          <div class="monitor-media-time">${esc(timeStr)}</div>
+        </div>`;
+      } else {
+        html += `<div class="monitor-media-item" data-lightbox="${esc(m.src)}">
+          <img src="${esc(m.src)}" alt="Screenshot" loading="lazy">
+          <div class="monitor-media-time">${esc(timeStr)}</div>
+        </div>`;
+      }
+    }
+    html += '</div>';
+  }
+
+  // Log feed
+  html += '<div class="monitor-section-title">📋 Activity Feed (' + S.monitorLogs.length + ')</div>';
+  if (!S.monitorLogs.length && !S.monitorMedia.length) {
+    html += `<div class="empty-state">
+      <div class="empty-icon">📡</div>
+      <div class="empty-title">No activity yet</div>
+      <div class="empty-desc">Run a job from the Create tab or send a command to the bot.<br>Screenshots and logs will appear here in real-time.</div>
+    </div>`;
+  } else {
+    html += '<div class="monitor-feed">';
+    const logsReversed = [...S.monitorLogs].reverse().slice(0, 50);
+    for (const l of logsReversed) {
+      const logType = l.logType || 'info';
+      const timeStr = l.time ? new Date(l.time).toLocaleTimeString() : '';
+      const text = l.text || l.summary || '';
+      html += `<div class="monitor-log-entry ${logType}">
+        <span class="monitor-log-time">${esc(timeStr)}</span>${esc(text)}
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  return html;
+}
+
 // ── Characters Tab ────────────────────────────────────────
 function renderCharacters() {
   const chars = S.session?.characters || [];
@@ -1404,6 +1650,19 @@ function bindEvents() {
         S.session=await fetchJSON('/api/session').catch(()=>S.session);
         S.llmStatus=await fetchJSON('/api/llm/status').catch(()=>S.llmStatus);
       }
+      if(t.dataset.tab==='monitor') {
+        // Fetch current status + logs via REST as initial state
+        const status = await fetchJSON('/api/status').catch(()=>null);
+        if(status) {
+          S.monitorJobState = status.state || 'idle';
+          S.monitorJobId = status.jobId || null;
+          if(status.logs && status.logs.length) {
+            S.monitorLogs = status.logs.filter(l=>l.type!=='media');
+            S.monitorMedia = status.logs.filter(l=>l.type==='media');
+          }
+        }
+        connectMonitorWS();
+      }
       render();
       if(tg) tg.HapticFeedback?.selectionChanged();
     });
@@ -1509,6 +1768,41 @@ function bindEvents() {
   document.querySelectorAll('[data-lightbox-video]').forEach(el=>{
     el.addEventListener('click',e=>{ e.stopPropagation(); openLightbox(el.dataset.lightboxVideo,true); });
   });
+
+  // ── Monitor tab bindings ────────────────────────────────
+  const monScreenshot = document.getElementById('mon-screenshot');
+  if(monScreenshot) monScreenshot.addEventListener('click', () => {
+    if(_ws && _ws.readyState === 1) _ws.send(JSON.stringify({type:'screenshot'}));
+    else postJSON('/api/cmd', {type:'screenshot'}).catch(()=>{});
+    if(tg) tg.HapticFeedback?.impactOccurred('light');
+  });
+  const monRefresh = document.getElementById('mon-refresh');
+  if(monRefresh) monRefresh.addEventListener('click', async () => {
+    const status = await fetchJSON('/api/status').catch(()=>null);
+    if(status) {
+      S.monitorJobState = status.state || 'idle';
+      S.monitorJobId = status.jobId || null;
+      if(status.logs && status.logs.length) {
+        S.monitorLogs = status.logs.filter(l=>l.type!=='media');
+        const newMedia = status.logs.filter(l=>l.type==='media');
+        if(newMedia.length) S.monitorMedia = newMedia;
+      }
+    }
+    render();
+    if(tg) tg.HapticFeedback?.impactOccurred('light');
+  });
+  const monStop = document.getElementById('mon-stop');
+  if(monStop) monStop.addEventListener('click', () => {
+    if(_ws && _ws.readyState === 1) _ws.send(JSON.stringify({type:'stop'}));
+    else postJSON('/api/cmd', {type:'stop'}).catch(()=>{});
+    if(tg) tg.HapticFeedback?.notificationOccurred('warning');
+  });
+  const monInjectInput = document.getElementById('mon-inject-input');
+  const monInjectSend = document.getElementById('mon-inject-send');
+  if(monInjectInput) monInjectInput.addEventListener('keydown', e => {
+    if(e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); handleMonitorInject(); }
+  });
+  if(monInjectSend) monInjectSend.addEventListener('click', handleMonitorInject);
 
   // Start LLM button (appears in chat and prompt lab when no AI is running)
   const startLlmBtn = document.getElementById('btn-start-llm');
@@ -1768,6 +2062,24 @@ async function handleNewProject() {
   showBanner('info','Starting fresh — ready for a new project.',3000);
   if(tg) tg.HapticFeedback?.notificationOccurred('success');
   render();
+}
+
+// ── Monitor inject handler ────────────────────────────────
+function handleMonitorInject() {
+  const input = document.getElementById('mon-inject-input');
+  if(!input) return;
+  const msg = input.value.trim();
+  if(!msg) return;
+  // Send via WebSocket or REST
+  if(_ws && _ws.readyState === 1) {
+    _ws.send(JSON.stringify({type:'inject', message:msg}));
+  } else {
+    postJSON('/api/inject', {message:msg}).catch(()=>{});
+  }
+  S.monitorLogs.push({type:'log', text:'💬 Injected: '+msg, logType:'info', time:Date.now()});
+  input.value = '';
+  render();
+  if(tg) tg.HapticFeedback?.impactOccurred('light');
 }
 
 // ── LLM start handler ─────────────────────────────────────

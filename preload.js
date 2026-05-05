@@ -217,6 +217,10 @@ contextBridge.exposeInMainWorld('app', {
   onTelegramUnavailable: (cb) => ipcRenderer.on('telegram-unavailable', (_, d) => cb(d)),
   offTelegramUnavailable: () => ipcRenderer.removeAllListeners('telegram-unavailable'),
 
+  // Remote run (Telegram/MiniApp triggered jobs mirrored to desktop UI)
+  onRemoteRunStart:  (cb) => ipcRenderer.on('remote-run-start', (_, d) => cb(d)),
+  offRemoteRunStart: () => ipcRenderer.removeAllListeners('remote-run-start'),
+
   // Mini App
   miniappStart:      ()     => ipcRenderer.invoke('miniapp-start'),
   miniappStop:       ()     => ipcRenderer.invoke('miniapp-stop'),
