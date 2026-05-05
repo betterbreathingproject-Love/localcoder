@@ -2651,6 +2651,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                       return
                     }
                     let buf = ''
+                    let _chatReasoning = ''
                     res.on('data', chunk => {
                       if (this._aborted) { r.destroy(); return }
                       buf += chunk.toString()
@@ -2661,9 +2662,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                         if (line.startsWith('data: ')) {
                           try {
                             const parsed = JSON.parse(line.slice(6))
-                            const delta = parsed.choices?.[0]?.delta?.content
-                            if (delta) {
-                              _chatAccumulated = (_chatAccumulated || '') + delta
+                            const delta = parsed.choices?.[0]?.delta
+                            if (delta?.reasoning_content) {
+                              _chatReasoning += delta.reasoning_content
+                              this.send('qwen-event', { type: 'thinking-delta', text: _chatReasoning })
+                            }
+                            if (delta?.content) {
+                              _chatAccumulated = (_chatAccumulated || '') + delta.content
                               this.send('qwen-event', { type: 'text-delta', text: _chatAccumulated })
                             }
                           } catch { /* skip malformed SSE line */ }
@@ -2693,6 +2698,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                 headers: localHeaders,
               }, (res) => {
                 let buf = ''
+                let _localReasoning = ''
                 res.on('data', chunk => {
                   if (this._aborted) { r.destroy(); return }
                   buf += chunk.toString()
@@ -2703,9 +2709,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                     if (line.startsWith('data: ')) {
                       try {
                         const parsed = JSON.parse(line.slice(6))
-                        const delta = parsed.choices?.[0]?.delta?.content
-                        if (delta) {
-                          _chatAccumulated = (_chatAccumulated || '') + delta
+                        const delta = parsed.choices?.[0]?.delta
+                        if (delta?.reasoning_content) {
+                          _localReasoning += delta.reasoning_content
+                          this.send('qwen-event', { type: 'thinking-delta', text: _localReasoning })
+                        }
+                        if (delta?.content) {
+                          _chatAccumulated = (_chatAccumulated || '') + delta.content
                           this.send('qwen-event', { type: 'text-delta', text: _chatAccumulated })
                         }
                       } catch { /* skip */ }

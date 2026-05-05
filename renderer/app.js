@@ -2853,9 +2853,39 @@ async function sendAgentMode(prompt, opts = {}) {
           }
           break
         }
+        // Handle OpenAI-compatible reasoning_content (thinking) deltas
+        if (sev.choices?.[0]?.delta?.reasoning_content) {
+          stopPromptProgress()
+          lastThinking += sev.choices[0].delta.reasoning_content
+          const thinkEl = document.getElementById(respId+'-think')
+          thinkEl.style.display = ''
+          thinkEl.setAttribute('open', '')
+          if (!thinkEl.classList.contains('think-active') && !thinkEl.classList.contains('think-entering')) {
+            thinkEl.classList.remove('think-fading', 'think-collapsed')
+            thinkEl.classList.add('think-entering')
+            thinkEl.addEventListener('animationend', () => {
+              thinkEl.classList.remove('think-entering')
+              thinkEl.classList.add('think-active')
+            }, { once: true })
+          }
+          document.getElementById(respId+'-think-body').textContent = lastThinking + '▌'
+          updateAgentStatsBar({ state: 'thinking', inputTokens, outputTokens: outputTokens || tokenCount, toolCount: _agentToolCount, activity: 'Reasoning...' })
+        }
         if (sev.choices?.[0]?.delta?.content) {
           stopPromptProgress()
           if (!startTime) startTime = Date.now()
+          // Collapse thinking box when text starts
+          { const thinkElFade = document.getElementById(respId+'-think')
+            if (thinkElFade && (thinkElFade.classList.contains('think-active') || thinkElFade.classList.contains('think-entering'))) {
+              thinkElFade.classList.remove('think-active', 'think-entering')
+              thinkElFade.removeAttribute('open')
+              thinkElFade.classList.add('think-fading')
+              thinkElFade.addEventListener('animationend', () => {
+                thinkElFade.classList.remove('think-fading')
+                thinkElFade.classList.add('think-collapsed')
+              }, { once: true })
+            }
+          }
           const content = sev.choices[0].delta.content
           lastText += content
           // Keep allTextSegments in sync for raw-stream path
@@ -2922,6 +2952,18 @@ async function sendAgentMode(prompt, opts = {}) {
         if (sev.type === 'content_block_delta' && sev.delta?.text) {
           stopPromptProgress()
           if (!startTime) startTime = Date.now()
+          // Collapse thinking when text content arrives
+          { const thinkElFade3 = document.getElementById(respId+'-think')
+            if (thinkElFade3 && (thinkElFade3.classList.contains('think-active') || thinkElFade3.classList.contains('think-entering'))) {
+              thinkElFade3.classList.remove('think-active', 'think-entering')
+              thinkElFade3.removeAttribute('open')
+              thinkElFade3.classList.add('think-fading')
+              thinkElFade3.addEventListener('animationend', () => {
+                thinkElFade3.classList.remove('think-fading')
+                thinkElFade3.classList.add('think-collapsed')
+              }, { once: true })
+            }
+          }
           const deltaText = sev.delta.text
           lastText += deltaText
           // Keep allTextSegments in sync for content_block_delta path
@@ -2938,8 +2980,19 @@ async function sendAgentMode(prompt, opts = {}) {
         } else if (sev.type === 'content_block_delta' && sev.delta?.thinking) {
           stopPromptProgress()
           lastThinking += sev.delta.thinking
-          document.getElementById(respId+'-think').style.display = ''
-          document.getElementById(respId+'-think-body').textContent = lastThinking + '▌'
+          { const thinkElCbd = document.getElementById(respId+'-think')
+            thinkElCbd.style.display = ''
+            thinkElCbd.setAttribute('open', '')
+            if (!thinkElCbd.classList.contains('think-active') && !thinkElCbd.classList.contains('think-entering')) {
+              thinkElCbd.classList.remove('think-fading', 'think-collapsed')
+              thinkElCbd.classList.add('think-entering')
+              thinkElCbd.addEventListener('animationend', () => {
+                thinkElCbd.classList.remove('think-entering')
+                thinkElCbd.classList.add('think-active')
+              }, { once: true })
+            }
+            document.getElementById(respId+'-think-body').textContent = lastThinking + '▌'
+          }
           updateAgentStatsBar({ state: 'thinking', inputTokens, outputTokens: outputTokens || tokenCount, toolCount: _agentToolCount, activity: 'Reasoning...' })
         } else if (sev.usage) {
           inputTokens = sev.usage.prompt_tokens || inputTokens
