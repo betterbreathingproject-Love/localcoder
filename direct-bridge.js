@@ -1604,15 +1604,13 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           const total = lines.length
           const start = Math.max(0, (args.start_line || 1) - 1)
           const end = args.end_line != null ? Math.min(total, args.end_line) : total
-          const slice = lines.slice(start, end).join('\n')
+          const numbered = lines.slice(start, end).map((l, i) => `${start + i + 1}| ${l}`).join('\n')
           const hasMore = end < total
-          return { result: slice + (hasMore ? `\n\n[lines ${start + 1}-${end} of ${total} total — call read_file again with start_line=${end + 1} to continue]` : ''), _fullRead: !hasMore, _totalLines: total }
+          return { result: numbered + (hasMore ? `\n\n[lines ${start + 1}-${end} of ${total} total — call read_file again with start_line=${end + 1} to continue]` : ''), _fullRead: !hasMore, _totalLines: total }
         }
-        // Tag the result so post-processing knows the entire file was returned.
-        // This prevents the truncation loop: when context pressure later trims
-        // this content, the trimmer can say "file was fully read but trimmed for
-        // context space" instead of "call read_file again" which causes a loop.
-        return { result: raw, _fullRead: true, _totalLines: totalLines }
+        // Return full file with line numbers so the agent knows exact line positions
+        const numbered = raw.split('\n').map((l, i) => `${i + 1}| ${l}`).join('\n')
+        return { result: numbered, _fullRead: true, _totalLines: totalLines }
       }
       case 'read_files': {
         if (!Array.isArray(args.paths) || args.paths.length === 0) {
@@ -1661,11 +1659,13 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
               charCount += lines[i].length + 1
               if (charCount > remaining) { cutLine = i; break }
             }
-            results.push(`── ${filePath} (${lines.length} lines) ──\n${lines.slice(0, cutLine).join('\n')}\n[truncated — showing ${cutLine} of ${lines.length} lines to fit context budget]`)
+            const numbered = lines.slice(0, cutLine).map((l, i) => `${i + 1}| ${l}`).join('\n')
+            results.push(`── ${filePath} (${lines.length} lines) ──\n${numbered}\n[truncated — showing ${cutLine} of ${lines.length} lines to fit context budget]`)
             totalChars += charCount
             break // stop reading more files
           }
-          results.push(`── ${filePath} (${lines.length} lines) ──\n${raw}`)
+          const numbered = lines.map((l, i) => `${i + 1}| ${l}`).join('\n')
+          results.push(`── ${filePath} (${lines.length} lines) ──\n${numbered}`)
           totalChars += raw.length
         }
         if (args.paths.length > 20) {
