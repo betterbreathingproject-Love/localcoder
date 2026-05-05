@@ -653,6 +653,30 @@ const QUICK_PROMPTS = [
 
 // ── Rendering ─────────────────────────────────────────
 function render() {
+  // Skip full re-render if user is focused on an input/textarea to avoid
+  // destroying their typing state (keyboard collapse on mobile, cursor loss)
+  const focused = document.activeElement;
+  if (focused && (focused.tagName === 'TEXTAREA' || focused.tagName === 'INPUT')) {
+    // Sync the state from the focused element so it's not lost
+    if (focused.id === 'prompt-input') state.prompt = focused.value;
+    // Only update non-destructive parts (status pill, etc.) without full rebuild
+    const pill = document.querySelector('.status-pill');
+    if (pill) {
+      pill.className = 'status-pill ' + state.jobState;
+      pill.textContent = state.jobState.charAt(0).toUpperCase() + state.jobState.slice(1);
+    }
+    const sub = document.querySelector('.header-sub');
+    if (sub) sub.textContent = state.connected ? 'Connected' : 'Connecting...';
+    return;
+  }
+
+  const app = document.getElementById('app');
+  app.innerHTML = renderHeader() + renderTabs() + renderContent();
+  bindEvents();
+}
+
+// Force a full render even if an input is focused (used after explicit user actions)
+function forceRender() {
   const app = document.getElementById('app');
   app.innerHTML = renderHeader() + renderTabs() + renderContent();
   bindEvents();
@@ -968,7 +992,7 @@ function bindEvents() {
     el.onclick = () => {
       state.tab = el.dataset.tab;
       if (el.dataset.tab === 'projects' && state.projects.length === 0) fetchProjects();
-      render();
+      forceRender();
     };
   });
   // Prompt input
@@ -979,7 +1003,7 @@ function bindEvents() {
   }
   // Quick prompts
   document.querySelectorAll('.quick-chip').forEach(el => {
-    el.onclick = () => { state.prompt = el.dataset.prompt; render(); };
+    el.onclick = () => { state.prompt = el.dataset.prompt; forceRender(); };
   });
   // Buttons
   const btnRun = document.getElementById('btn-run');
