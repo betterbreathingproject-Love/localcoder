@@ -1304,6 +1304,7 @@ function _cleanupAndQuit() {
   if (telegramBot) telegramBot.stop()
   if (miniAppTunnel) { miniAppTunnel.kill(); miniAppTunnel = null }
   if (miniAppServer) { miniAppServer.stop(); miniAppServer = null }
+  try { require('./robin-router').robinRouter.stop() } catch { /* not loaded */ }
   try { require('./xcode-tool').shutdown() } catch { /* not installed */ }
   // Final safety net: SIGKILL anything still on port 8090 before exiting
   setTimeout(() => {
