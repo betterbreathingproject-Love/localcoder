@@ -233,24 +233,60 @@ class RemoteJobController extends EventEmitter {
       }
       case 'screenshot': {
         // Req 7.2, 7.3
-        if (this._state !== 'running') {
-          await this._bot.sendMessage(this._chatId, 'No browser session is active.')
-          return
-        }
-        if (this._bridge && this._bridge._browserInstance) {
+        // Try browser screenshot first, then fall back to desktop screenshot
+        let screenshotData = null
+
+        // Attempt 1: Browser screenshot (from active job bridge)
+        if (this._state === 'running' && this._bridge && this._bridge._browserInstance) {
           try {
             const result = await this._bridge._browserInstance.execute('browser_screenshot', {})
             const content = result.result || ''
             const b64Match = content.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/)
             if (b64Match) {
-              const tmpPath = path.join(os.tmpdir(), `screenshot_${Date.now()}.png`)
-              fs.writeFileSync(tmpPath, Buffer.from(b64Match[1], 'base64'))
-              await this._bot.sendPhoto(this._chatId, tmpPath, 'Manual screenshot')
-              return
+              screenshotData = `data:image/png;base64,${b64Match[1]}`
             }
-          } catch { /* fall through to no-session message */ }
+          } catch { /* fall through */ }
         }
-        await this._bot.sendMessage(this._chatId, 'No browser session is active.')
+
+        // Attempt 2: Browser screenshot from shared bridge
+        if (!screenshotData && this._sharedBridge && this._sharedBridge._browserInstance) {
+          try {
+            const result = await this._sharedBridge._browserInstance.execute('browser_screenshot', {})
+            const content = result.result || ''
+            const b64Match = content.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/)
+            if (b64Match) {
+              screenshotData = `data:image/png;base64,${b64Match[1]}`
+            }
+          } catch { /* fall through */ }
+        }
+
+        // Attempt 3: Desktop screenshot
+        if (!screenshotData) {
+          try {
+            const { executeDesktopTool } = require('./desktop-tool')
+            const result = await executeDesktopTool('desktop_screenshot', {})
+            if (result && result.result) {
+              const b64Match = result.result.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/)
+              if (b64Match) {
+                screenshotData = `data:image/png;base64,${b64Match[1]}`
+              }
+            }
+          } catch { /* desktop screenshot not available */ }
+        }
+
+        if (screenshotData) {
+          // Emit so the miniapp receives it
+          this.emit('agent:screenshot', { base64: screenshotData })
+          // Also send to Telegram chat
+          try {
+            const b64Only = screenshotData.replace(/^data:image\/png;base64,/, '')
+            const tmpPath = path.join(os.tmpdir(), `screenshot_${Date.now()}.png`)
+            fs.writeFileSync(tmpPath, Buffer.from(b64Only, 'base64'))
+            await this._bot.sendPhoto(this._chatId, tmpPath, 'Manual screenshot')
+          } catch { /* non-blocking */ }
+        } else {
+          await this._bot.sendMessage(this._chatId, 'No browser or desktop session available for screenshot.')
+        }
         break
       }
       case 'app': {

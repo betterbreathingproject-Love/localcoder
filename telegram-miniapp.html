@@ -557,8 +557,24 @@ function stopJob() {
 
 function requestScreenshot() {
   state.screenshotLoading = true;
-  sendCmd('screenshot');
   render();
+  // Use dedicated screenshot endpoint that waits for the result
+  fetch(getApiBase() + '/api/screenshot', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      state.screenshotLoading = false;
+      if (data.ok && data.data) {
+        state.screenshot = data.data;
+        const src = data.data.startsWith('data:') ? data.data : 'data:image/png;base64,' + data.data;
+        state.media.push({ type: 'image', src, time: Date.now() });
+        if (state.media.length > 50) state.media.shift();
+      }
+      forceRender();
+    })
+    .catch(() => {
+      state.screenshotLoading = false;
+      forceRender();
+    });
 }
 
 function requestStatus() {

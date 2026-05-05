@@ -252,6 +252,32 @@ class MiniAppServer extends EventEmitter {
       return
     }
 
+    // POST /api/screenshot — take a screenshot and return it directly
+    if (req.method === 'POST' && pathname === '/api/screenshot') {
+      // Listen for the screenshot event with a timeout
+      const timeout = setTimeout(() => {
+        res.writeHead(200)
+        res.end(JSON.stringify({ ok: false, error: 'Screenshot timed out or unavailable' }))
+      }, 10000)
+
+      const handler = (data) => {
+        clearTimeout(timeout)
+        const src = data.url || data.base64 || null
+        res.writeHead(200)
+        res.end(JSON.stringify({ ok: true, data: src }))
+      }
+      this._controller.once('agent:screenshot', handler)
+
+      // Trigger the screenshot
+      this._controller.handleCommand('screenshot', '').catch(() => {
+        clearTimeout(timeout)
+        this._controller.removeListener('agent:screenshot', handler)
+        res.writeHead(200)
+        res.end(JSON.stringify({ ok: false, error: 'Screenshot failed' }))
+      })
+      return
+    }
+
     // POST /api/inject — inject a prompt into the running agent
     if (req.method === 'POST' && pathname === '/api/inject') {
       this._parseBody(req).then((body) => {

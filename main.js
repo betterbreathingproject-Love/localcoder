@@ -938,11 +938,43 @@ function createWindow() {
             _jobId: null,
             getJobState() { return this._state },
             getJobId() { return this._jobId },
-            handleCommand(command) {
+            async handleCommand(command) {
               if (command === 'stop') {
                 if (this._state === 'running' && qwenBridge) {
                   qwenBridge.interrupt()
                   this._state = 'idle'
+                }
+              } else if (command === 'screenshot') {
+                let screenshotData = null
+
+                // Try browser screenshot from the shared bridge
+                if (qwenBridge && qwenBridge._browserInstance) {
+                  try {
+                    const result = await qwenBridge._browserInstance.execute('browser_screenshot', {})
+                    const content = result.result || ''
+                    const b64Match = content.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/)
+                    if (b64Match) {
+                      screenshotData = `data:image/png;base64,${b64Match[1]}`
+                    }
+                  } catch { /* fall through */ }
+                }
+
+                // Fall back to desktop screenshot
+                if (!screenshotData) {
+                  try {
+                    const { executeDesktopTool } = require('./desktop-tool')
+                    const result = await executeDesktopTool('desktop_screenshot', {})
+                    if (result && result.result) {
+                      const b64Match = result.result.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/)
+                      if (b64Match) {
+                        screenshotData = `data:image/png;base64,${b64Match[1]}`
+                      }
+                    }
+                  } catch { /* not available */ }
+                }
+
+                if (screenshotData) {
+                  this.emit('agent:screenshot', { base64: screenshotData })
                 }
               }
             },
