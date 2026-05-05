@@ -148,6 +148,7 @@ class RemoteJobController extends EventEmitter {
         telegramForwarder: {
           sendPhoto: (filePath, caption) => this._bot.sendPhoto(this._chatId, filePath, caption),
         },
+        inputRequester: this._inputRequester,
       })
 
       // Set up periodic status updates (Req 5.4 — ≥30s apart)
