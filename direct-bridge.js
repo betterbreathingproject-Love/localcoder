@@ -4872,6 +4872,17 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           }
         }
 
+        // ── Hard block: reject read tools when in a severe read loop ──────────
+        const _READ_BLOCK_TOOLS = new Set(['read_file', 'read_files', 'list_dir', 'search_files'])
+        if (consecutiveReadsWithoutWrite >= 7 && _READ_BLOCK_TOOLS.has(fnName)) {
+          const blockMsg = `REJECTED: You have made ${consecutiveReadsWithoutWrite} consecutive read calls without writing. ` +
+            `This call to ${fnName} has been blocked. You MUST call edit_file or write_file next. ` +
+            `Use the information already in your context to make your edit.`
+          this.send('qwen-event', { type: 'tool-result', tool_use_id: tc.id, content: blockMsg, is_error: true })
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: blockMsg })
+          continue
+        }
+
         // Execute — use pre-fetched result if available (parallel I/O optimization)
         const result = _prefetchResults.has(tc.id)
           ? await _prefetchResults.get(tc.id)
@@ -5650,23 +5661,42 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         } else if (WRITE_TOOLS.has(fnName) && !isError) {
           consecutiveReadsWithoutWrite = 0
         }
-        if (consecutiveReadsWithoutWrite >= 3) {
+        // Escalating enforcement — gets progressively more forceful
+        if (consecutiveReadsWithoutWrite === 3) {
           messages.push({
             role: 'system',
             content: `You have made ${consecutiveReadsWithoutWrite} consecutive read/search calls without writing any code. ` +
-              `Pause and reflect: what have you learned from these reads? Summarize your findings in 1 sentence, then act on them.\n` +
-              `You likely have enough context now. Your next call should be one of:\n` +
-              `- write_file to create a new file\n` +
+              `You likely have enough context now. Your NEXT call MUST be one of:\n` +
               `- edit_file to modify an existing file\n` +
+              `- write_file to create a new file\n` +
               `- bash to run a command\n` +
-              `If you genuinely need more information, explain what specific thing you're looking for and why.`,
+              `State in one sentence what you learned, then make your edit.`,
           })
           this.send('qwen-event', { type: 'system', subtype: 'warning', data: `⚠️ Read-only loop detected (${consecutiveReadsWithoutWrite} reads, 0 writes) — nudging agent to start writing` })
-          // Clear read history so the agent can re-read files if it genuinely
-          // needs content that was trimmed during compaction
+        } else if (consecutiveReadsWithoutWrite === 5) {
+          messages.push({
+            role: 'system',
+            content: `STOP READING. You have made ${consecutiveReadsWithoutWrite} read calls without a single write. ` +
+              `You are in a read loop. You MUST write code NOW.\n` +
+              `Use the information you already have. If you don't know the exact fix, make your best attempt — ` +
+              `an imperfect edit is better than reading forever.\n` +
+              `Your NEXT tool call MUST be edit_file or write_file. Any further read calls will be rejected.`,
+          })
+          this.send('qwen-event', { type: 'system', subtype: 'warning', data: `⚠️ Read-only loop escalation (${consecutiveReadsWithoutWrite} reads) — forcing write` })
+        } else if (consecutiveReadsWithoutWrite >= 7) {
+          // Hard block: reject the read and force a write
+          messages.push({
+            role: 'system',
+            content: `BLOCKED: ${consecutiveReadsWithoutWrite} consecutive reads with zero writes. You are stuck in a loop.\n` +
+              `Your read calls are no longer providing new information. You MUST:\n` +
+              `1. Use edit_file to fix the issue with what you know NOW\n` +
+              `2. If you cannot determine the fix, call ask_user to get guidance\n` +
+              `Do NOT call read_file, search_files, or list_dir again until you have written at least one edit.`,
+          })
+          this.send('qwen-event', { type: 'system', subtype: 'warning', data: `🚫 Read loop BLOCKED (${consecutiveReadsWithoutWrite} reads) — must write or ask_user` })
+          // Clear read history so if the agent does finally write, it can re-read after
           _readFileHistory.clear()
           _writeHistory.clear()
-          consecutiveReadsWithoutWrite = 0
         }
 
         // Check if the model called task_complete — end the session
@@ -5740,16 +5770,18 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         const pending = _lastTodos.filter(t => t.status === 'pending').map(t => `${t.id}: ${t.content || t.text || '?'}`).join(', ')
         const inProgress = _lastTodos.find(t => t.status === 'in_progress')
         if (pending) {
+          const urgency = turn >= 9 ? ' You are running low on turns — prioritize writing code over gathering more context.' : ''
           messages.push({
             role: 'system',
-            content: `CHECKPOINT (turn ${turn}): ${done}/${total} tasks done.${inProgress ? ` Current: "${inProgress.content || inProgress.text}".` : ''} Remaining: ${pending}.\nBriefly state what you just accomplished, then continue with the next task. Do not repeat completed work.`,
+            content: `CHECKPOINT (turn ${turn}): ${done}/${total} tasks done.${inProgress ? ` Current: "${inProgress.content || inProgress.text}".` : ''} Remaining: ${pending}.\n` +
+              `State in ONE sentence what you accomplished since the last checkpoint, then make your next edit_file or write_file call.${urgency}`,
           })
         }
       } else if (turn > 0 && turn % 3 === 0 && !_lastTodos) {
-        // No todos — just nudge the model to reflect
+        const urgency = turn >= 9 ? ' You are running low on turns — write code now.' : ''
         messages.push({
           role: 'system',
-          content: `CHECKPOINT (turn ${turn}): Briefly state what you've accomplished so far and what you're doing next. Then continue.`,
+          content: `CHECKPOINT (turn ${turn}): State what you've accomplished and what you're doing next. Then make your next edit.${urgency}`,
         })
       }
 
