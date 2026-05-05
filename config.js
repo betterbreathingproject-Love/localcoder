@@ -53,7 +53,7 @@ module.exports = {
 
   // Rewind store settings
   REWIND_MAX_ENTRIES: 1000,
-  REWIND_TTL_MS: 24 * 60 * 60 * 1000, // 24 hours — persisted to disk, survives restarts
+  REWIND_TTL_MS: Infinity, // persist forever — file size is small
 
   // Default model paths
   DEFAULT_PRIMARY_MODEL,

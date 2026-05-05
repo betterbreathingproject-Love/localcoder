@@ -41,14 +41,10 @@ function _loadRewindStore() {
     const p = _rewindStorePath()
     if (!fs.existsSync(p)) return
     const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
-    const now = Date.now()
     let loaded = 0
     for (const [key, entry] of Object.entries(raw)) {
-      // Skip expired entries on load
-      if (now - entry.storedAt <= REWIND_TTL_MS) {
-        _rewindStore.set(key, entry)
-        loaded++
-      }
+      _rewindStore.set(key, entry)
+      loaded++
     }
     if (loaded > 0) console.log(`[compactor] Loaded ${loaded} rewind entries from disk`)
   } catch (err) {
@@ -70,13 +66,9 @@ function _persistRewindStore() {
   try {
     const dir = path.join(os.homedir(), '.qwencoder')
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    const now = Date.now()
     const obj = {}
     for (const [key, entry] of _rewindStore.entries()) {
-      // Only persist non-expired entries
-      if (now - entry.storedAt <= REWIND_TTL_MS) {
-        obj[key] = entry
-      }
+      obj[key] = entry
     }
     fs.writeFileSync(_rewindStorePath(), JSON.stringify(obj), 'utf-8')
   } catch (err) {
@@ -105,11 +97,6 @@ function rewindStore(original, compressed, originalTokens = 0) {
 function rewindRetrieve(key) {
   const entry = _rewindStore.get(key)
   if (!entry) return null
-  if (Date.now() - entry.storedAt > REWIND_TTL_MS) {
-    _rewindStore.delete(key)
-    _scheduleRewindSave()
-    return null
-  }
   return entry.original
 }
 
