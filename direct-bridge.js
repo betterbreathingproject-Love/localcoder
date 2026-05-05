@@ -2916,6 +2916,24 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     if (conversationHistory && conversationHistory.length > 0) {
       const estimatedHistoryTokens = conversationHistory.reduce((sum, m) => sum + estimateTokens(m.content), 0)
 
+      // Inject recently modified files so the agent knows what was already touched
+      let recentChangesCtx = ''
+      try {
+        const { execSync } = require('child_process')
+        // Try git first — shows files changed in the last hour
+        const gitChanges = execSync('git diff --name-only HEAD 2>/dev/null || git status --short 2>/dev/null | head -20', { cwd: workDir, timeout: 3000, encoding: 'utf-8' }).trim()
+        if (gitChanges) {
+          recentChangesCtx = `\n\n## Recently Modified Files\nThese files have uncommitted changes (likely from your previous work):\n${gitChanges}\n`
+        }
+      } catch {
+        // git not available — try find for recently modified files
+        try {
+          const { execSync } = require('child_process')
+          const recent = execSync('find . -name "*.html" -o -name "*.js" -o -name "*.css" -o -name "*.swift" -o -name "*.py" -o -name "*.ts" | xargs ls -lt 2>/dev/null | head -10', { cwd: workDir, timeout: 3000, encoding: 'utf-8' }).trim()
+          if (recent) recentChangesCtx = `\n\n## Recently Modified Files\n${recent}\n`
+        } catch { /* skip */ }
+      }
+
       if (estimatedHistoryTokens > 6000) {
         // Large history — use file tree + task graph instead of full transcript.
         // Keep only the last 2 exchanges for immediate conversational context.
@@ -2930,14 +2948,14 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           return `[${role}]: ${content}`
         }).join('\n\n')
 
-        finalPrompt = `${projectCtx}\n\n## Recent Conversation\n${recentTranscript}\n\n---\n\n`
+        finalPrompt = `${projectCtx}\n\n## Recent Conversation\n${recentTranscript}${recentChangesCtx}\n\n---\n\n`
       } else {
         // Short history — include full transcript (original behavior)
         const transcript = conversationHistory.map(m => {
           const role = m.role === 'user' ? 'User' : 'Assistant'
           return `[${role}]: ${m.content}`
         }).join('\n\n')
-        finalPrompt = `Here is the conversation so far:\n\n${transcript}\n\n---\n\n`
+        finalPrompt = `Here is the conversation so far:\n\n${transcript}${recentChangesCtx}\n\n---\n\n`
       }
     }
 
