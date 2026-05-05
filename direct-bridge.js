@@ -6212,11 +6212,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               // Also strip raw tool call XML that leaks into the text stream when the
               // model outputs tool calls as XML text rather than structured tool_calls.
               // Matches both complete and partial (still-streaming) tool call blocks.
-              const TOOL_CALL_XML_RE = /<tool_call>[\s\S]*?<\/tool_call>|<function[\s\S]*?<\/function>|><function=[^>]*>[\s\S]*/g
+              // Includes Qwen's <function=name> <parameter=key> format.
+              const TOOL_CALL_XML_RE = /<tool_call>[\s\S]*?<\/tool_call>|<\/tool_call>|<function[\s\S]*?<\/function>|><function=[^>]*>[\s\S]*|<function=[^>]*>[\s\S]*|<parameter=[^>]*>[\s\S]*?<\/parameter>|l>\s*function=[\s\S]*/g
               let displayText = accumulated.replace(STREAM_ANNOTATION_RE, '').replace(TOOL_CALL_XML_RE, '').trim()
               // If the accumulated text ends with a partial tool call opener, hide it
-              if (displayText.endsWith('<tool_call>') || displayText.endsWith('><function=') || /<tool_call>[^<]*$/.test(displayText)) {
-                displayText = displayText.replace(/<tool_call>[^<]*$/, '').trim()
+              if (displayText.endsWith('<tool_call>') || displayText.endsWith('><function=') || /<tool_call>[^<]*$/.test(displayText) || displayText.endsWith('l>') || /<function=[^>]*$/.test(displayText)) {
+                displayText = displayText.replace(/<tool_call>[^<]*$/, '').replace(/<function=[^>]*$/, '').replace(/l>\s*$/, '').trim()
               }
               this.send('qwen-event', { type: 'text-delta', text: displayText })
             }

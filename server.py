@@ -647,6 +647,11 @@ _TOOL_CALL_RE = re.compile(
     r'<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>',
     re.DOTALL
 )
+# Bare <function=name>...</function> without <tool_call> wrapper (thinking mode leak)
+_BARE_FUNC_RE = re.compile(
+    r'<function=([^>]+)>(.*?)</function>',
+    re.DOTALL
+)
 # Fallback: <tool_call> blocks containing JSON (Qwen 2.5/3.x alternate format)
 # Use greedy match to capture the full JSON including nested braces
 _TOOL_CALL_JSON_RE = re.compile(
@@ -703,6 +708,30 @@ def parse_tool_calls(text: str):
                     })
             except (json.JSONDecodeError, ValueError):
                 pass
+
+    # Fallback: bare <function=name>...</function> without <tool_call> wrapper
+    # (happens when thinking mode is enabled and model leaks tool calls into text)
+    if not tool_calls:
+        for match in _BARE_FUNC_RE.finditer(text):
+            func_name = match.group(1).strip()
+            body = match.group(2)
+            args = {}
+            for pm in _PARAM_RE.finditer(body):
+                param_name = pm.group(1).strip()
+                param_value = pm.group(2).strip()
+                try:
+                    args[param_name] = json.loads(param_value)
+                except (json.JSONDecodeError, ValueError):
+                    args[param_name] = param_value
+            if func_name:
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": json.dumps(args),
+                    }
+                })
 
     return tool_calls
 
@@ -1927,7 +1956,10 @@ async def chat_completions(req: ChatRequest):
             _TOOL_CLOSE = "</tool_call>"
             _PARTIAL_TAGS = ("<", "<t", "<to", "<too", "<tool",
                              "<tool_", "<tool_c", "<tool_ca",
-                             "<tool_cal", "<tool_call")
+                             "<tool_cal", "<tool_call",
+                             "<f", "<fu", "<fun", "<func", "<funct",
+                             "<functi", "<functio", "<function",
+                             "<function=")
 
             # ── Thinking token tracking for streaming ─────────────────────────
             # Stream thinking content as reasoning_content deltas in real-time
@@ -2053,6 +2085,12 @@ async def chat_completions(req: ChatRequest):
 
                         if not _in_tool_call:
                             tc_start = accumulated.find(_TOOL_OPEN, _content_sent_len)
+                            # Also detect bare <function= without <tool_call> wrapper
+                            # (happens when thinking is enabled and model leaks tool calls into text)
+                            if tc_start == -1:
+                                func_start = accumulated.find("<function=", _content_sent_len)
+                                if func_start != -1:
+                                    tc_start = func_start
                             if tc_start != -1:
                                 _in_tool_call = True
                                 _tc_id = f"call_{uuid.uuid4().hex[:12]}"
@@ -2068,7 +2106,11 @@ async def chat_completions(req: ChatRequest):
                                         "choices": [{"index": 0, "delta": {"content": unsent}, "finish_reason": None}],
                                     }
                                     yield f"data: {json.dumps(chunk_data)}\n\n"
-                                _tool_call_buf = accumulated[tc_start + len(_TOOL_OPEN):]
+                                # Handle both <tool_call><function=...> and bare <function=...>
+                                if accumulated[tc_start:].startswith(_TOOL_OPEN):
+                                    _tool_call_buf = accumulated[tc_start + len(_TOOL_OPEN):]
+                                else:
+                                    _tool_call_buf = accumulated[tc_start:]
                             else:
                                 tail = accumulated[-11:] if len(accumulated) >= 11 else accumulated
                                 if any(tail.endswith(pt) for pt in _PARTIAL_TAGS):
