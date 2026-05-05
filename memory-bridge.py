@@ -1400,8 +1400,19 @@ def _get_extraction_semaphore() -> "_asyncio.Semaphore":
 
 
 def _get_metal_lock():
-    """Get the global Metal GPU threading lock from server.py."""
+    """Get the global Metal GPU threading lock from server.py.
+    
+    IMPORTANT: server.py must register itself as sys.modules['server'] when
+    running as __main__, otherwise this returns a lock from a different module
+    instance (causing concurrent Metal access crashes).
+    """
     try:
+        import sys as _sys
+        # Prefer the __main__ module if it has get_metal_lock (it IS the server)
+        main_mod = _sys.modules.get('__main__')
+        if main_mod and hasattr(main_mod, 'get_metal_lock'):
+            return main_mod.get_metal_lock()
+        # Fallback to importlib (should be the same instance after the fix)
         import importlib
         server = importlib.import_module("server")
         return server.get_metal_lock()

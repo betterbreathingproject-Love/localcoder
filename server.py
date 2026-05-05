@@ -10,6 +10,15 @@ from typing import Optional, Union, Any
 import importlib
 import signal
 
+# ── Module identity fix ───────────────────────────────────────────────────────
+# When run as `python server.py`, this module is registered as '__main__' in
+# sys.modules. But memory-bridge.py imports it via importlib.import_module("server")
+# which would create a SECOND module instance with a DIFFERENT _metal_lock.
+# This caused concurrent Metal access crashes (both locks acquired independently).
+# Fix: register this module as 'server' so all imports share the same instance.
+if __name__ == '__main__' and 'server' not in sys.modules:
+    sys.modules['server'] = sys.modules['__main__']
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
