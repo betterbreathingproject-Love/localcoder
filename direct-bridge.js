@@ -2191,9 +2191,11 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         if (rewindResult.found) {
           return { result: rewindResult.content }
         }
-        return { error: `Content no longer available for key "${args.key}". The rewind store has expired or evicted this entry. ` +
-          `Do NOT retry with the same key and do NOT call read_file — the file content was already in your context. ` +
-          `Use search_files to find specific patterns, or use edit_file directly if you know what changes to make.` }
+        // Key not found — likely because the session was interrupted and restarted,
+        // or the model hallucinated a key. Guide the agent to re-read the file.
+        return { error: `Rewind key "${args.key}" not found — the previous session context was lost when you were interrupted. ` +
+          `Use read_file to re-read any files you need, or use search_files to find specific code. ` +
+          `Do NOT retry rewind_context — the keys from the previous session are gone.` }
       }
       case 'ask_user': {
         if (!inputRequester) return { result: '(No input channel available — proceeding without user input)' }
@@ -6555,8 +6557,8 @@ For complex tasks the user asks you to plan: write a task graph to .maccoder/tas
 After every write_file or edit_file the LSP reports new errors in the tool result. If you see ⚠️ fix the errors before continuing. You can also call lsp_get_diagnostics proactively.
 
 ## Compressed context
-Large tool results are compressed automatically. If you see [compressed: ... rewind key: rw_xxx] at the top of a tool result, call rewind_context with that key only if you need the full content.
-If you see [TRIMMED for context space], the content was already fully read but shortened to fit. The full content is archived in memory. Do NOT call read_file again on that file — use search_files to find specific patterns, or use edit_file directly.
+Large tool results are compressed automatically. If you see [compressed: ... rewind key: rw_XXXX] at the top of a tool result, you can call rewind_context({"key": "rw_XXXX"}) with the EXACT key shown to retrieve the full original. Only use keys you see in actual compression notices — do NOT guess or invent keys.
+If you see [TRUNCATED], the file was too large to fit in context. Use read_file with start_line to page through it, or use search_files to find specific patterns.
 
 ## Memory system
 Your context may include injected blocks — read them before starting work:
