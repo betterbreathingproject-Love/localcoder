@@ -5370,7 +5370,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           }
         }
 
-        // Search rank — rank search results by relevance
+        // Search rank — DISABLED. The 0.8B model often misjudges relevance
+        // for domain-specific searches (e.g. game pathfinding, custom APIs) and
+        // discards the results the agent actually needs. Better to show all
+        // results and let the main model decide what's relevant.
+        /*
         if (assistClient && fnName === 'search_files' && typeof content === 'string') {
           const lines = content.split('\n').filter(Boolean)
           if (lines.length > assistClient.SEARCH_RANK_THRESHOLD) {
@@ -5382,6 +5386,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             }
           }
         }
+        */
 
         // ── Missing-type detection ────────────────────────────────────────────
         // When search_files returns no results for the same type/symbol query
