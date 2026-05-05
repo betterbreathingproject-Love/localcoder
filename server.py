@@ -1868,8 +1868,8 @@ async def chat_completions(req: ChatRequest):
                         except Exception as _sync_err:
                             print(f"[metal-trace] run_stream finally: mx.synchronize() FAILED: {_sync_err} (thread={_tid})", file=sys.stderr, flush=True)
                             # Fallback: brief sleep if synchronize fails
-                            import time
-                            time.sleep(0.05)
+                            import time as _time_mod
+                            _time_mod.sleep(0.05)
                         # Smart post-inference cache clearing — only when memory pressure warrants it
                         if _should_clear_metal_cache():
                             try:
