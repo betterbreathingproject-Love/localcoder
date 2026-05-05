@@ -5199,9 +5199,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
         if (content && content.length > effectiveLimit) {
 
-          // File extract — run on raw content BEFORE compression so the fast model
-          // sees the full file and can pick the most relevant section intelligently.
-          // Only applies to read_file; other tools go straight to compression.
+          // File extract — DISABLED. The fast model (0.8B) often extracts the
+          // wrong section for complex tasks (e.g. picks HTML/CSS instead of JS
+          // game logic when user says "fix the path"). This silently discards
+          // the code the agent needs and causes read loops. The line-number
+          // format + paged reads are a better approach for large files.
+          // TODO: Re-enable when using a more capable extraction model.
+          /*
           if (assistClient && fnName === 'read_file') {
             const taskContext = messages.filter(m => m.role === 'user').pop()?.content || ''
             if (taskContext) {
@@ -5213,6 +5217,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               }
             }
           }
+          */
 
           // Re-check after extraction — may now be within limits
           if (content.length > effectiveLimit) {
@@ -5666,11 +5671,14 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
 
         // Track read-only loops: if the model keeps reading without writing,
-        // inject a system nudge to force it to start editing
+        // inject a system nudge to force it to start editing.
+        // Paged reads (start_line/end_line) count as 0.5 since they're legitimate
+        // navigation of a large file, not aimless re-reading.
         const READ_TOOLS = new Set(['read_file', 'read_files', 'list_dir', 'search_files'])
         const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'edit_files'])
         if (READ_TOOLS.has(fnName) && !isError) {
-          consecutiveReadsWithoutWrite++
+          const isPagedNav = fnName === 'read_file' && (fnArgs.start_line != null || fnArgs.end_line != null)
+          consecutiveReadsWithoutWrite += isPagedNav ? 0.5 : 1
         } else if (WRITE_TOOLS.has(fnName) && !isError) {
           consecutiveReadsWithoutWrite = 0
         }
