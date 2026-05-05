@@ -4750,18 +4750,19 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           const readKey = fnArgs.path
           const prev = _readFileHistory.get(readKey)
           if (prev && prev.count >= 1 && prev.fullRead) {
-            // Check if the ACTUAL file content is still in context — not just
-            // a trimmed stub or compression notice that happens to mention the
-            // filename. A message counts as "content present" only if it:
-            //   1. Is a tool result with substantial content (>500 chars)
+            // Check if the ACTUAL file content is still FULLY in context.
+            // A message counts as "content present" only if it:
+            //   1. Is a tool result with substantial content
             //   2. Contains the filename
-            //   3. Does NOT start or end with a trimming/compression marker
-            const TRIMMED_MARKERS = ['[TRIMMED for context space', '[TRUNCATED', '[compressed:', '[§TRIMMED§']
+            //   3. Does NOT have trimming/compression markers
+            //   4. Has enough content to represent most of the file (>60% of original)
+            const TRIMMED_MARKERS = ['[TRIMMED for context space', '[TRUNCATED', '[compressed:', '[§TRIMMED§', '[lines ', 'Do NOT call read_file again']
+            const expectedMinChars = prev.totalLines ? prev.totalLines * 20 : 2000  // rough estimate: 20 chars/line avg
             const contentStillInContext = messages.some(m => {
-              if (m.role !== 'tool' || !m.content || m.content.length <= 500) return false
+              if (m.role !== 'tool' || !m.content) return false
               if (!m.content.includes(readKey.split('/').pop())) return false
-              // If the message was trimmed/compressed, the real content is gone.
-              // Check both head (compressed notice moved to top) and tail.
+              // Must have at least 60% of expected content size
+              if (m.content.length < expectedMinChars * 0.6) return false
               const head = m.content.slice(0, 200)
               const tail = m.content.slice(-300)
               for (const marker of TRIMMED_MARKERS) {
@@ -4774,19 +4775,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                 const resolvedPath = path.resolve(cwd, fnArgs.path.trim())
                 const currentMtime = fs.statSync(resolvedPath).mtimeMs
                 if (prev.mtime && currentMtime <= prev.mtime) {
-                  // Track how many times this file has been blocked
+                  // Block once, then allow on the next attempt
                   prev.blockedCount = (prev.blockedCount || 0) + 1
                   _readFileHistory.set(readKey, prev)
-                  // After 3 blocked attempts, allow the read through so the agent
-                  // can get the content it needs — but keep the history entry so
-                  // the guard stays active for subsequent reads (don't delete it,
-                  // as that resets the counter and causes an infinite read loop).
-                  if (prev.blockedCount >= 3) {
-                    this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Releasing read lock on ${readKey} after ${prev.blockedCount} blocked attempts — allowing one read through` })
-                    // Reset blockedCount so the guard re-arms after this read.
-                    // Also clear mtime so the next read updates it with the fresh value.
+                  if (prev.blockedCount >= 2) {
+                    this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Releasing read lock on ${readKey} after ${prev.blockedCount} blocked attempts` })
                     prev.blockedCount = 0
-                    prev.mtime = null  // will be refreshed when the read result is recorded
+                    prev.mtime = null
                     _readFileHistory.set(readKey, prev)
                     // Fall through to execute the actual read
                   } else {
@@ -4807,39 +4802,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
         // ── Paged re-read interception ───────────────────────────────────────
         // If the agent already fully read a file and is now paging through it
-        // with start_line/end_line (200-line chunks), intercept ONLY if the
-        // content is still in context. If it was trimmed, allow the paged read.
+        // with start_line/end_line, ALLOW it. The agent is requesting specific
+        // lines because the full read was likely truncated for context space.
+        // Only block if the file was read AND the content is genuinely still
+        // complete in context (no truncation markers AND total chars match).
         if (fnName === 'read_file' && fnArgs.path && (fnArgs.start_line != null || fnArgs.end_line != null)) {
-          const readKey = fnArgs.path
-          const prev = _readFileHistory.get(readKey)
-          if (prev && prev.fullRead) {
-            const TRIMMED_MARKERS = ['[TRIMMED for context space', '[TRUNCATED', '[compressed:', '[§TRIMMED§']
-            const contentStillInContext = messages.some(m => {
-              if (m.role !== 'tool' || !m.content || m.content.length <= 500) return false
-              if (!m.content.includes(readKey.split('/').pop())) return false
-              const head = m.content.slice(0, 200)
-              const tail = m.content.slice(-300)
-              for (const marker of TRIMMED_MARKERS) {
-                if (head.includes(marker) || tail.includes(marker)) return false
-              }
-              return true
-            })
-            if (contentStillInContext) {
-              try {
-                const resolvedPath = path.resolve(cwd, fnArgs.path.trim())
-                const currentMtime = fs.statSync(resolvedPath).mtimeMs
-                if (prev.mtime && currentMtime <= prev.mtime) {
-                  this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Skipped paged re-read of ${readKey} lines ${fnArgs.start_line}-${fnArgs.end_line} (content still in context)` })
-                  const interceptContent = `You already read this entire file (${prev.totalLines} lines) on turn ${prev.lastTurn} and the content is still in your context. ` +
-                    `Proceed with your edit or use search_files to find specific patterns.`
-                  this.send('qwen-event', { type: 'tool-result', tool_use_id: tc.id, content: interceptContent, is_error: false })
-                  messages.push({ role: 'tool', tool_call_id: tc.id, content: interceptContent })
-                  continue
-                }
-              } catch { /* stat failed — fall through */ }
-            }
-            // Content was trimmed — allow the paged read
-          }
+          // Always allow paged reads — the agent is trying to access specific
+          // sections that may have been truncated from the initial full read.
+          // The full-read interception above handles the "don't re-read the
+          // whole file" case; paged reads are a legitimate navigation pattern.
         }
 
         // ── Batch re-read interception (read_files) ──────────────────────────
@@ -4913,8 +4884,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
 
         // ── Hard block: reject read tools when in a severe read loop ──────────
-        const _READ_BLOCK_TOOLS = new Set(['read_file', 'read_files', 'list_dir', 'search_files'])
-        if (consecutiveReadsWithoutWrite >= 7 && _READ_BLOCK_TOOLS.has(fnName)) {
+        // Exempt paged reads (start_line/end_line) — the agent is navigating a
+        // large file to find the section it needs to edit. Also exempt search_files
+        // since it's trying to locate code to modify.
+        const _READ_BLOCK_TOOLS = new Set(['read_file', 'read_files', 'list_dir'])
+        const isPagedRead = fnName === 'read_file' && (fnArgs.start_line != null || fnArgs.end_line != null)
+        if (consecutiveReadsWithoutWrite >= 7 && _READ_BLOCK_TOOLS.has(fnName) && !isPagedRead) {
           const blockMsg = `REJECTED: You have made ${consecutiveReadsWithoutWrite} consecutive read calls without writing. ` +
             `This call to ${fnName} has been blocked. You MUST call edit_file or write_file next. ` +
             `Use the information already in your context to make your edit.`
