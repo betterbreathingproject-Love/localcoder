@@ -2176,6 +2176,45 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .chat-panel .agent-output::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
 .chat-panel .agent-output::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
 
+/* ── Scroll to bottom button ── */
+.scroll-to-bottom {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(30,30,30,0.9);
+  backdrop-filter: blur(8px);
+  color: #ccc;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: translateY(8px) scale(0.9);
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease, background 0.15s;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.scroll-to-bottom.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+.scroll-to-bottom:hover {
+  background: rgba(50,50,50,0.95);
+  color: #fff;
+  border-color: rgba(255,255,255,0.2);
+}
+.scroll-to-bottom:active {
+  transform: translateY(1px) scale(0.95);
+}
+
 /* ── Global refinements for modern Mac vibe ── */
 
 /* Softer titlebar */

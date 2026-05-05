@@ -1498,6 +1498,7 @@ async function sendAgentMode(prompt, opts = {}) {
     <div class="msg-activity" id="${respId}-activity">🤖 Agent starting in ${esc(currentProject)}... <span class="activity-dot">●</span></div>
   </div>`)
   _userScrolledUp = false  // reset scroll lock for new agent run
+  _showScrollToBottom(false)
   scrollOutput()
 
   let lastText = '', lastThinking = '', tokenCount = 0, startTime = null
@@ -3331,7 +3332,7 @@ function _submitAskUserReply(cardId, reply) {
 }
 
 // Track whether the user has manually scrolled up — disables auto-scroll
-// until they scroll back near the bottom.
+// until they scroll back near the bottom or click the scroll-to-bottom button.
 let _userScrolledUp = false
 
 ;(() => {
@@ -3339,23 +3340,51 @@ let _userScrolledUp = false
   if (o) {
     o.addEventListener('scroll', () => {
       const distFromBottom = o.scrollHeight - o.scrollTop - o.clientHeight
-      // User scrolled up — stop auto-scrolling
-      if (distFromBottom > 300) {
+      // User scrolled up — stop auto-scrolling immediately
+      if (distFromBottom > 80) {
         _userScrolledUp = true
+        _showScrollToBottom(true)
       }
       // User scrolled back to bottom — re-enable auto-scroll
-      if (distFromBottom < 50) {
+      if (distFromBottom < 30) {
         _userScrolledUp = false
+        _showScrollToBottom(false)
       }
     })
   }
 })()
 
+// Floating "scroll to bottom" button
+function _showScrollToBottom(show) {
+  let btn = document.getElementById('scroll-to-bottom-btn')
+  if (!btn) {
+    btn = document.createElement('button')
+    btn.id = 'scroll-to-bottom-btn'
+    btn.className = 'scroll-to-bottom'
+    btn.innerHTML = '↓'
+    btn.title = 'Scroll to bottom'
+    btn.addEventListener('click', () => {
+      const o = document.getElementById('agentOutput')
+      if (o) {
+        o.scrollTo({ top: o.scrollHeight, behavior: 'smooth' })
+        _userScrolledUp = false
+        _showScrollToBottom(false)
+      }
+    })
+    const container = document.getElementById('agentOutput')?.parentElement
+    if (container) {
+      container.style.position = 'relative'
+      container.appendChild(btn)
+    }
+  }
+  btn.classList.toggle('visible', show)
+}
+
 function scrollOutput() {
   if (_userScrolledUp) return
   const o = document.getElementById('agentOutput')
   const distanceFromBottom = o.scrollHeight - o.scrollTop - o.clientHeight
-  if (distanceFromBottom < 300) {
+  if (distanceFromBottom < 80) {
     o.scrollTop = o.scrollHeight
   }
 }
