@@ -2137,25 +2137,31 @@ async def _handle_vision(payload: dict) -> AssistResponse:
             try:
                 import mlx_vlm as _mlx_vlm
                 import gc
+                import asyncio as _aio_heal
                 _extract_model = None
                 _extract_processor = None
                 gc.collect()
-                _heal_lock = _get_metal_lock()
-                if _heal_lock:
-                    with _heal_lock:
+
+                def _run_heal_reload():
+                    _heal_lock = _get_metal_lock()
+                    if _heal_lock:
+                        with _heal_lock:
+                            try:
+                                import mlx.core as mx
+                                mx.metal.clear_cache()
+                            except Exception:
+                                pass
+                            return _mlx_vlm.load(_extract_model_path)
+                    else:
                         try:
                             import mlx.core as mx
                             mx.metal.clear_cache()
                         except Exception:
                             pass
-                        _extract_model, _extract_processor = _mlx_vlm.load(_extract_model_path)
-                else:
-                    try:
-                        import mlx.core as mx
-                        mx.metal.clear_cache()
-                    except Exception:
-                        pass
-                    _extract_model, _extract_processor = _mlx_vlm.load(_extract_model_path)
+                        return _mlx_vlm.load(_extract_model_path)
+
+                _heal_loop = _aio_heal.get_running_loop()
+                _extract_model, _extract_processor = await _heal_loop.run_in_executor(None, _run_heal_reload)
                 _extract_model_has_vision = True
                 logger.info(f"[_handle_vision] self-heal reload complete — vision now enabled")
             except Exception as _heal_err:
@@ -2187,10 +2193,28 @@ async def _handle_vision(payload: dict) -> AssistResponse:
             formatted_prompt = vlm_apply_chat_template(
                 _extract_processor, _vlm_config, prompt, num_images=1
             )
-            _vision_metal_lock = _get_metal_lock()
-            if _vision_metal_lock:
-                with _vision_metal_lock:
-                    response = vlm_generate(
+            # Run vision inference in a thread to avoid blocking the event loop.
+            # The metal lock is a threading.Lock — acquiring it in an async function
+            # would deadlock the event loop if the main model is running inference
+            # (the main model signals completion via call_soon_threadsafe which
+            # requires the event loop to be free).
+            import asyncio as _aio
+            _loop = _aio.get_running_loop()
+
+            def _run_vision_inference():
+                _vision_metal_lock = _get_metal_lock()
+                if _vision_metal_lock:
+                    with _vision_metal_lock:
+                        return vlm_generate(
+                            _extract_model,
+                            _extract_processor,
+                            prompt=formatted_prompt,
+                            image=tmp_path,
+                            max_tokens=512,
+                            verbose=False,
+                        )
+                else:
+                    return vlm_generate(
                         _extract_model,
                         _extract_processor,
                         prompt=formatted_prompt,
@@ -2198,15 +2222,8 @@ async def _handle_vision(payload: dict) -> AssistResponse:
                         max_tokens=512,
                         verbose=False,
                     )
-            else:
-                response = vlm_generate(
-                    _extract_model,
-                    _extract_processor,
-                    prompt=formatted_prompt,
-                    image=tmp_path,
-                    max_tokens=512,
-                    verbose=False,
-                )
+
+            response = await _loop.run_in_executor(None, _run_vision_inference)
         finally:
             try:
                 _os.unlink(tmp_path)
