@@ -90,12 +90,30 @@ function register(ipcMain, { getMainWindow, getCurrentProject, setCurrentProject
     const dir = safePath(cwd || getCurrentProject())
     if (!dir) return { error: 'No project directory' }
     try {
-      execSync('git init', { cwd: dir, encoding: 'utf-8', timeout: 5000 })
-      // Set up macOS Keychain credential helper so push auth persists
+      const projectName = path.basename(dir)
+
+      // Set up credential helper
       try { execSync('git config --global credential.helper osxkeychain', { encoding: 'utf-8', timeout: 3000 }) } catch {}
+
+      // Init repo
+      execSync('git init', { cwd: dir, encoding: 'utf-8', timeout: 5000 })
       execSync('git add -A', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
       execSync('git commit -m "Initial commit"', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
-      return { ok: true }
+
+      // Auto-create GitHub repo and push using gh CLI
+      let remoteUrl = ''
+      try {
+        // Check if gh is available and authenticated
+        execSync('gh auth status', { encoding: 'utf-8', timeout: 5000 })
+        // Create private repo on GitHub
+        const repoOut = execSync(`gh repo create "${projectName}" --private --source="${dir}" --push`, { cwd: dir, encoding: 'utf-8', timeout: 30000 })
+        remoteUrl = repoOut.trim()
+      } catch (ghErr) {
+        // gh not available or not authenticated — repo created locally only
+        console.log('[git-init] gh CLI unavailable or failed:', ghErr.message)
+      }
+
+      return { ok: true, remote: remoteUrl || null }
     } catch (err) { return { error: err.message } }
   })
 
@@ -113,9 +131,44 @@ function register(ipcMain, { getMainWindow, getCurrentProject, setCurrentProject
     const dir = safePath(cwd || getCurrentProject())
     if (!dir) return { error: 'No project directory' }
     try {
-      const out = execSync('git push 2>&1', { cwd: dir, encoding: 'utf-8', timeout: 30000 })
+      // Check if remote exists
+      let hasRemote = false
+      try {
+        const remote = execSync('git remote get-url origin', { cwd: dir, encoding: 'utf-8', timeout: 3000 }).trim()
+        hasRemote = !!remote
+      } catch { /* no remote */ }
+
+      // Auto-create remote if missing (using gh CLI)
+      if (!hasRemote) {
+        try {
+          execSync('gh auth status', { encoding: 'utf-8', timeout: 5000 })
+          const projectName = path.basename(dir)
+          execSync(`gh repo create "${projectName}" --private --source="${dir}" --remote=origin`, { cwd: dir, encoding: 'utf-8', timeout: 30000 })
+          hasRemote = true
+        } catch {
+          return { error: 'NO_REMOTE' }
+        }
+      }
+
+      // Commit any uncommitted changes first
+      try {
+        const status = execSync('git status --porcelain', { cwd: dir, encoding: 'utf-8', timeout: 5000 }).trim()
+        if (status) {
+          execSync('git add -A', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
+          execSync('git commit -m "Auto-commit before push"', { cwd: dir, encoding: 'utf-8', timeout: 10000 })
+        }
+      } catch { /* nothing to commit */ }
+
+      // Push
+      const out = execSync('git push -u origin HEAD 2>&1', { cwd: dir, encoding: 'utf-8', timeout: 30000 })
       return { ok: true, output: out }
-    } catch (err) { return { error: err.message } }
+    } catch (err) {
+      const msg = err.stderr || err.stdout || err.message || ''
+      if (msg.includes('Authentication') || msg.includes('403') || msg.includes('401') || msg.includes('could not read Username') || msg.includes('terminal prompts disabled')) {
+        return { error: 'AUTH_REQUIRED' }
+      }
+      return { error: msg || err.message }
+    }
   })
 
   ipcMain.handle('git-add-remote', async (_, cwd, url) => {

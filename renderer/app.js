@@ -1098,9 +1098,14 @@ async function refreshGit() {
 
 async function gitInitProject() {
   if (!currentProject) return
+  appendMsg('system', '⏳ Initializing git and creating GitHub repository...')
   const result = await window.app.gitInit(currentProject)
   if (result.error) { appendMsg('system', `❌ Git init failed: ${result.error}`); return }
-  appendMsg('system', '✅ Git repository initialized with initial commit')
+  if (result.remote) {
+    appendMsg('system', `✅ Repo created and pushed to GitHub`)
+  } else {
+    appendMsg('system', '✅ Git repo initialized locally (install gh CLI for auto GitHub sync)')
+  }
   refreshGit()
 }
 
@@ -1114,29 +1119,37 @@ async function gitCommitPrompt() {
 }
 
 async function gitPushProject() {
+  appendMsg('system', '⏳ Pushing...')
   const result = await window.app.gitPush(currentProject)
   if (result.error) {
-    if (result.error.includes('No configured push destination') || result.error.includes('no upstream')) {
-      appendMsg('system', '⚠️ No remote configured. Use "Connect Remote" to add a GitHub repository.')
-    } else if (result.error.includes('Authentication') || result.error.includes('403') || result.error.includes('fatal:')) {
-      appendMsg('system', '⚠️ Push failed — you may need to authenticate. Opening GitHub to create a token...')
-      window.app.openExternal('https://github.com/settings/tokens/new?scopes=repo&description=QwenCoder+Mac+Studio')
+    if (result.error === 'NO_REMOTE') {
+      appendMsg('system', '⚠️ No gh CLI — use "Connect Remote" to link manually.')
+      gitConnectRemote()
+    } else if (result.error === 'AUTH_REQUIRED') {
+      appendMsg('system', '🔑 Run "gh auth login" in terminal to authenticate.')
     } else {
       appendMsg('system', `❌ Push failed: ${result.error}`)
     }
     return
   }
-  appendMsg('system', '✅ Pushed to remote')
+  appendMsg('system', '✅ Pushed to GitHub')
   refreshGit()
 }
 
 async function gitConnectRemote() {
+  const choice = confirm('Do you have an existing GitHub repository?\n\nOK = Enter existing repo URL\nCancel = Open GitHub to create a new one')
+  if (!choice) {
+    // Open GitHub new repo page with the project name pre-filled
+    const projectName = currentProject ? currentProject.split('/').pop() : 'my-project'
+    window.app.openExternal(`https://github.com/new?name=${encodeURIComponent(projectName)}`)
+    appendMsg('system', '🌐 Create your repository on GitHub, then come back and click "Connect Remote" again to paste the URL.')
+    return
+  }
   const url = prompt('GitHub repository URL (e.g. https://github.com/user/repo.git):')
   if (!url) return
   const result = await window.app.gitAddRemote(currentProject, url)
   if (result.error) { appendMsg('system', `❌ Failed to add remote: ${result.error}`); return }
   appendMsg('system', `✅ Remote "origin" set to ${url}`)
-  // Offer to push
   if (confirm('Remote added. Push now?')) {
     gitPushProject()
   }

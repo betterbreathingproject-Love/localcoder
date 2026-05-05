@@ -178,6 +178,42 @@ function undoClear(sessionId) {
   _scheduleUndoSave()
 }
 
+// ── Auto-commit: save every edit as a git checkpoint ──────────────────────────
+// Debounced — batches rapid edits into one commit. Fires 3s after the last edit.
+// Makes every change recoverable via git log / git revert.
+let _autoCommitTimer = null
+let _autoCommitCwd = null
+const { execSync: _execSync } = require('child_process')
+
+function _scheduleAutoCommit(cwd) {
+  _autoCommitCwd = cwd
+  if (_autoCommitTimer) clearTimeout(_autoCommitTimer)
+  _autoCommitTimer = setTimeout(() => {
+    _autoCommitTimer = null
+    _performAutoCommit()
+  }, 3000)
+}
+
+function _performAutoCommit() {
+  const cwd = _autoCommitCwd
+  if (!cwd) return
+  try {
+    // Check if it's a git repo
+    _execSync('git rev-parse --git-dir', { cwd, encoding: 'utf-8', timeout: 3000, stdio: 'pipe' })
+    // Check if there are changes to commit
+    const status = _execSync('git status --porcelain', { cwd, encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim()
+    if (!status) return
+    // Count changed files for the commit message
+    const changedFiles = status.split('\n').filter(Boolean)
+    const fileNames = changedFiles.slice(0, 3).map(l => l.slice(3).split('/').pop()).join(', ')
+    const msg = changedFiles.length <= 3
+      ? `auto: ${fileNames}`
+      : `auto: ${fileNames} +${changedFiles.length - 3} more`
+    _execSync('git add -A', { cwd, encoding: 'utf-8', timeout: 10000, stdio: 'pipe' })
+    _execSync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { cwd, encoding: 'utf-8', timeout: 10000, stdio: 'pipe' })
+  } catch { /* not a git repo or commit failed — silent */ }
+}
+
 // ── EventSink implementations ─────────────────────────────────────────────────
 
 /**
@@ -1711,6 +1747,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         const _beforeWrite = fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null
         fs.writeFileSync(p, args.content, 'utf-8')
         if (notify && notify._sessionId) undoRecord(notify._sessionId, p, _beforeWrite, args.content, 'write_file')
+        _scheduleAutoCommit(cwd)
         return { result: `Wrote ${args.content.length} chars to ${args.path}` }
       }
       case 'edit_file': {
@@ -1737,6 +1774,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         // Snapshot before-state for undo
         if (notify && notify._sessionId) undoRecord(notify._sessionId, p, content, _editedContent, 'edit_file')
         fs.writeFileSync(p, _editedContent, 'utf-8')
+        _scheduleAutoCommit(cwd)
         return { result: `Edited ${args.path}` }
       }
       case 'edit_files': {
@@ -1799,6 +1837,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         if (args.edits.length > 20) {
           results.push(`\n[Note: only first 20 of ${args.edits.length} edits were applied]`)
         }
+        if (successCount > 0) _scheduleAutoCommit(cwd)
         return { result: `${successCount} edits applied, ${errorCount} failed:\n${results.join('\n')}` }
       }
       case 'list_dir': {
