@@ -3633,10 +3633,10 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       // context via read_file/search_files which is more targeted.
       // TODO: Re-enable when prompt size is reduced or prefix cache covers it.
 
-      // Todo bootstrap — await before first LLM call to prevent concurrent Metal inference.
-      console.log('[direct-bridge] _agentLoop turn %d: pre-todo-bootstrap', turn)
-      // Running fire-and-forget caused SIGABRT: fast model and main model both hit Metal
-      // simultaneously. Awaiting serializes them via the server's inference semaphore.
+      // Todo bootstrap — disabled for fast model to avoid conflict with main model.
+      // The fast model (0.8B) generates a todo list before the main model starts,
+      // but the main model then creates its own plan via update_todos, causing
+      // duplicate/conflicting todo lists. Let the main model own the plan.
       if (turn === 0) {
         if (Array.isArray(this._task?.initialTodos) && this._task.initialTodos.length > 0 && !_bootstrapDone) {
           // Orchestrator provided subtasks from tasks.md — use them directly,
@@ -3644,22 +3644,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           this.send('qwen-event', { type: 'todo-bootstrap', todos: this._task.initialTodos })
           _lastTodos = this._task.initialTodos
           _bootstrapDone = true
-        } else if (assistClient && assistClient.TODO_BOOTSTRAP_ENABLED) {
-          // TODO: re-enable once fast model semaphore contention is resolved
-          const userPrompt = messages.filter(m => m.role === 'user').pop()?.content || ''
-          if (typeof userPrompt === 'string' && userPrompt) {
-            try {
-              const todos = await Promise.race([
-                assistClient.assistTodoBootstrap(userPrompt),
-                new Promise(r => setTimeout(() => r(null), 8000)),
-              ])
-              if (todos && !_bootstrapDone) {
-                this.send('qwen-event', { type: 'fast-assist', task: 'todo_bootstrap', label: '⚡ Fast Assistant — generated initial todo list', detail: `${todos.length} items` })
-                this.send('qwen-event', { type: 'todo-bootstrap', todos })
-              }
-            } catch (_) {}
-          }
         }
+        // Fast model bootstrap disabled — main model creates its own plan via update_todos
       }
 
       // ── Task-aware tool hints (turn 0 only) ────────────────────────────
