@@ -1888,11 +1888,13 @@ async def chat_completions(req: ChatRequest):
                              "<tool_cal", "<tool_call")
 
             # ── Thinking token tracking for streaming ─────────────────────────
-            # Buffer thinking content separately so it's not sent as content
-            # deltas but preserved as reasoning_content in the final response.
+            # Stream thinking content as reasoning_content deltas in real-time
+            # so the client can show it in the UI, while also buffering it for
+            # the final response's reasoning_content field.
             _in_thinking = False
             _thinking_buf = ""
             _thinking_done = False  # True once </think> is seen
+            _thinking_sent_len = 0  # how much of _thinking_buf has been streamed
             _THINK_OPEN = "<think>"
             _THINK_CLOSE = "</think>"
             _PARTIAL_THINK_TAGS = ("<", "<t", "<th", "<thi", "<thin", "<think")
@@ -1910,8 +1912,8 @@ async def chat_completions(req: ChatRequest):
                         full_text_parts.append(data)
 
                         # ── Thinking token buffering ──────────────────────────
-                        # Intercept <think>...</think> blocks: buffer them as
-                        # reasoning_content instead of streaming as content deltas.
+                        # Intercept <think>...</think> blocks: stream them as
+                        # reasoning_content deltas and buffer for final response.
                         if not _thinking_done and not _in_tool_call:
                             # Detect <think> open
                             if not _in_thinking:
@@ -1928,7 +1930,17 @@ async def chat_completions(req: ChatRequest):
                                         }
                                         yield f"data: {json.dumps(chunk_data)}\n\n"
                                     _thinking_buf = accumulated[think_open_pos + len(_THINK_OPEN):]
+                                    _thinking_sent_len = 0
                                     _content_sent_len = len(accumulated)
+                                    # Stream initial reasoning_content delta
+                                    if _thinking_buf:
+                                        rc_delta = {
+                                            "id": cid, "object": "chat.completion.chunk",
+                                            "created": created, "model": _model_id,
+                                            "choices": [{"index": 0, "delta": {"reasoning_content": _thinking_buf}, "finish_reason": None}],
+                                        }
+                                        yield f"data: {json.dumps(rc_delta)}\n\n"
+                                        _thinking_sent_len = len(_thinking_buf)
                                     continue
                                 else:
                                     # Check for partial <think tag at end — hold back
@@ -1936,7 +1948,7 @@ async def chat_completions(req: ChatRequest):
                                     if any(tail.endswith(pt) for pt in _PARTIAL_THINK_TAGS):
                                         continue
 
-                            # Inside thinking block — buffer and check for </think>
+                            # Inside thinking block — buffer and stream incrementally
                             if _in_thinking:
                                 _thinking_buf = accumulated[accumulated.find(_THINK_OPEN) + len(_THINK_OPEN):]
                                 think_close_pos = _thinking_buf.find(_THINK_CLOSE)
@@ -1944,14 +1956,46 @@ async def chat_completions(req: ChatRequest):
                                     _thinking_buf = _thinking_buf[:think_close_pos].strip()
                                     _in_thinking = False
                                     _thinking_done = True
+                                    # Stream final reasoning_content delta
+                                    if len(_thinking_buf) > _thinking_sent_len:
+                                        rc_delta = {
+                                            "id": cid, "object": "chat.completion.chunk",
+                                            "created": created, "model": _model_id,
+                                            "choices": [{"index": 0, "delta": {"reasoning_content": _thinking_buf[_thinking_sent_len:]}, "finish_reason": None}],
+                                        }
+                                        yield f"data: {json.dumps(rc_delta)}\n\n"
                                     # Reset content tracking to after </think>
                                     full_close = accumulated.find(_THINK_CLOSE)
                                     _content_sent_len = full_close + len(_THINK_CLOSE) if full_close != -1 else len(accumulated)
                                 else:
-                                    # Check for partial </think at end — keep buffering
-                                    tail = _thinking_buf[-9:] if len(_thinking_buf) >= 9 else _thinking_buf
-                                    if any(tail.endswith(pt) for pt in _PARTIAL_THINK_CLOSE):
-                                        pass  # keep buffering
+                                    # Stream new reasoning_content since last send
+                                    if len(_thinking_buf) > _thinking_sent_len:
+                                        new_thinking = _thinking_buf[_thinking_sent_len:]
+                                        # Check for partial </think at end — hold back that part
+                                        tail = _thinking_buf[-9:] if len(_thinking_buf) >= 9 else _thinking_buf
+                                        if any(tail.endswith(pt) for pt in _PARTIAL_THINK_CLOSE):
+                                            # Don't stream the partial tag suffix
+                                            safe_end = len(_thinking_buf)
+                                            for pt in _PARTIAL_THINK_CLOSE:
+                                                if tail.endswith(pt):
+                                                    safe_end = len(_thinking_buf) - len(pt)
+                                                    break
+                                            if safe_end > _thinking_sent_len:
+                                                rc_delta = {
+                                                    "id": cid, "object": "chat.completion.chunk",
+                                                    "created": created, "model": _model_id,
+                                                    "choices": [{"index": 0, "delta": {"reasoning_content": _thinking_buf[_thinking_sent_len:safe_end]}, "finish_reason": None}],
+                                                }
+                                                yield f"data: {json.dumps(rc_delta)}\n\n"
+                                                _thinking_sent_len = safe_end
+                                        else:
+                                            rc_delta = {
+                                                "id": cid, "object": "chat.completion.chunk",
+                                                "created": created, "model": _model_id,
+                                                "choices": [{"index": 0, "delta": {"reasoning_content": new_thinking}, "finish_reason": None}],
+                                            }
+                                            yield f"data: {json.dumps(rc_delta)}\n\n"
+                                            _thinking_sent_len = len(_thinking_buf)
                                 _content_sent_len = len(accumulated)
                                 continue
 
@@ -2083,23 +2127,18 @@ async def chat_completions(req: ChatRequest):
                         full_text = "".join(full_text_parts)
 
                         # Extract reasoning_content from the full text for the
-                        # final response. During streaming we buffered it in
-                        # _thinking_buf, but re-extract from full_text as the
-                        # authoritative source in case of edge cases.
+                        # final response. During streaming we already sent
+                        # reasoning_content incrementally as deltas. Re-extract
+                        # from full_text as the authoritative source for the
+                        # conversation history field (sent via the resolve value,
+                        # not as an SSE chunk — client already has the streamed version).
                         _final_reasoning = _thinking_buf.strip() if _thinking_buf else None
                         if not _final_reasoning:
                             _fr, _ = extract_thinking(full_text)
                             _final_reasoning = _fr
 
-                        # Emit reasoning_content as a dedicated chunk so the
-                        # client can preserve it in conversation history.
-                        if _final_reasoning:
-                            rc_chunk = {
-                                "id": cid, "object": "chat.completion.chunk",
-                                "created": created, "model": _model_id,
-                                "choices": [{"index": 0, "delta": {"reasoning_content": _final_reasoning}, "finish_reason": None}],
-                            }
-                            yield f"data: {json.dumps(rc_chunk)}\n\n"
+                        # NOTE: reasoning_content was already streamed incrementally
+                        # during generation. No need to emit it again here.
 
                         if has_tools:
                             tool_calls = parse_tool_calls(full_text)
