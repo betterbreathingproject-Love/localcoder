@@ -2910,6 +2910,31 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     let stableSystemPrompt = systemPrompt
     let variableSystemContent = ''
 
+    // ── Code map auto-generation ──────────────────────────────────────────
+    // Before loading steering docs, ensure a fresh code-map.md exists. This
+    // is the symbol index the agent reads before running search_files — it
+    // stops the model from guessing at variable/function names (as seen in
+    // debug sessions where `search_files({pattern: "enemy|Enemy|enemies"})`
+    // returns no matches because the codebase uses different names).
+    // Generation is cheap (static regex scan, ~30 files max) and runs
+    // synchronously only when the map is missing or stale (>1h old).
+    if (!systemPromptOverride) {
+      try {
+        const { generateCodeMap, hasFreshCodeMap } = require('./project-map-generator')
+        if (!hasFreshCodeMap(workDir)) {
+          const t0 = Date.now()
+          const result = generateCodeMap(workDir)
+          if (!result.skipped) {
+            console.log('[direct-bridge] code-map generated: %d files in %dms',
+              result.filesScanned, Date.now() - t0)
+          }
+        }
+      } catch (err) {
+        console.warn('[direct-bridge] code-map generation failed:', err.message)
+        /* non-fatal — continue without code map */
+      }
+    }
+
     // Inject steering docs into the system prompt (vibe mode)
     // For spec mode, systemPromptOverride already includes steering from the agent factory
     if (!systemPromptOverride) {
@@ -6583,6 +6608,31 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     }
     const rolePreamble = rolePreambles[this._agentRole] || rolePreambles['general']
 
+    // Orient-first: check whether a code map exists for this project. If it
+    // does, the agent gets a strong nudge to read it before searching.
+    // Prevents the "search for enemy|Enemy|enemies and get no matches" loop.
+    let orientPreamble = ''
+    try {
+      const fsLocal = require('node:fs')
+      const pathLocal = require('node:path')
+      const mapPath = pathLocal.join(cwd, '.maccoder', 'steering', 'code-map.md')
+      if (fsLocal.existsSync(mapPath)) {
+        orientPreamble =
+          '\n\n## Orient before searching\n' +
+          'A `Code Map` section is included in your project context below. It lists the EXACT class/type names, function signatures, and event handlers used in this codebase.\n' +
+          '- Before calling `search_files`, check the Code Map for the name you need. Use the EXACT name listed there — do NOT guess with pipes like `Enemy|enemy|enemies`.\n' +
+          '- If the name you are looking for is NOT in the Code Map, the symbol likely does not exist under that name. Read the relevant file from the map to discover the real name, then search.\n' +
+          '- For bug fixes: read the file at the line listed in the Code Map first. Then search by the concrete names you found. This stops the "no matches found" loop.\n'
+      } else {
+        // No code map yet (generator skipped or failed). Fall back to a
+        // softer orient rule: read before searching when names are unknown.
+        orientPreamble =
+          '\n\n## Orient before searching\n' +
+          'No Code Map was generated for this project. Before calling `search_files` with guessed names, read ONE relevant file first (via `read_file` or `read_files`) to discover the actual variable, class, and function names used. Then search with those concrete names.\n' +
+          'Do NOT run multiple `search_files` calls with pipe-separated guesses like `Enemy|enemy|enemies` — each miss wastes a turn.\n'
+      }
+    } catch { /* non-fatal */ }
+
     // Note: the Qwen3 jinja template injects the full tool list automatically into the system block.
     // We do NOT repeat tool descriptions here — that wastes tokens and can confuse the model.
     // We only document tool call format and critical behavioural rules.
@@ -6590,7 +6640,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     return `You are a coding assistant running on Qwen3. You have access to tools — use them to take real actions.
 
 ## Role
-${rolePreamble}
+${rolePreamble}${orientPreamble}
 
 ## Working directory
 ${cwd}
