@@ -720,6 +720,30 @@ const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'undo_edit',
+      description: 'Undo a previous file edit. Reverts the file to its state before the edit was applied. Call with no arguments to undo the most recent edit, or pass an index (0 = most recent, 1 = second most recent, etc.). Use undo_list first to see what can be undone.',
+      parameters: {
+        type: 'object',
+        properties: {
+          index: { type: 'number', description: 'Which edit to undo (0 = most recent, 1 = second most recent). Default: 0' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'undo_list',
+      description: 'List recent file edits that can be undone. Shows file path, tool used, and timestamp for each. Use before undo_edit to see what is available.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
   ...BROWSER_TOOL_DEFS,
   ...WEB_TOOL_DEFS,
   ...DESKTOP_TOOL_DEFS,
@@ -2704,6 +2728,28 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         } catch (err) {
           return { result: `(User input timed out: ${err.message})` }
         }
+      }
+      case 'undo_list': {
+        const sessionId = notify._sessionId || ''
+        const entries = undoList(sessionId)
+        if (entries.length === 0) {
+          return { result: 'No edits to undo in this session.' }
+        }
+        const lines = entries.map((e, i) => {
+          const ago = Math.round((Date.now() - e.ts) / 1000)
+          const agoStr = ago < 60 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`
+          const action = e.isNew ? 'created' : 'edited'
+          return `${i}. ${e.filePath} — ${action} via ${e.tool} (${agoStr})`
+        })
+        return { result: `${entries.length} undoable edits (most recent first):\n${lines.join('\n')}\n\nUse undo_edit({"index": 0}) to undo the most recent.` }
+      }
+      case 'undo_edit': {
+        const sessionId = notify._sessionId || ''
+        const index = args.index != null ? args.index : 0
+        const result = undoApply(sessionId, index)
+        if (result.error) return { error: result.error }
+        _scheduleAutoCommit(cwd)
+        return { result: `✓ Undone: ${result.filePath} — restored (${result.restored})` }
       }
       case 'open_browser': {
         if (!args.target || typeof args.target !== 'string') {
@@ -6262,7 +6308,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Paged reads (start_line/end_line) count as 0.5 since they're legitimate
         // navigation of a large file, not aimless re-reading.
         const READ_TOOLS = new Set(['read_file', 'read_files', 'list_dir', 'search_files'])
-        const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'edit_file_lines', 'edit_files'])
+        const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'undo_edit'])
         if (READ_TOOLS.has(fnName) && !isError) {
           const isPagedNav = fnName === 'read_file' && (fnArgs.start_line != null || fnArgs.end_line != null)
           consecutiveReadsWithoutWrite += isPagedNav ? 0.5 : 1
@@ -6404,7 +6450,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       const _turnToolNames = toolCalls.map(tc => {
         try { return tc.function.name } catch { return '' }
       })
-      const _turnHadWrite = _turnToolNames.some(n => ['write_file', 'edit_file', 'edit_file_lines', 'edit_files'].includes(n))
+      const _turnHadWrite = _turnToolNames.some(n => ['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'undo_edit'].includes(n))
       const _turnHadBash = _turnToolNames.includes('bash')
       const _turnHadTodo = _turnToolNames.some(n => ['update_todos', 'edit_todos', 'task_complete'].includes(n))
       // DevTools calls are productive — they gather runtime data the agent can't get from source
