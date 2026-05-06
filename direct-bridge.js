@@ -3318,6 +3318,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     let _annotationNudgeCount = 0  // Track consecutive hallucinated-annotation nudges — cap to prevent infinite loop
     let _lastTodos = null  // Track the latest todo list for completion checking
     let _agentNotes = null  // Persistent thinking notes — survive compaction, re-injected after each compact
+    // Also stored on instance so interrupt() can access it for session resume
+    this._lastAgentNotes = null
 
     // ── Restore agent notes from conversation history (session resume) ────
     // When resuming a session, scan the messages for the last agent_notes.
@@ -4818,6 +4820,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Track agent notes — persist across compaction as a JS variable
         if (fnName === 'agent_notes' && typeof fnArgs.notes === 'string' && fnArgs.notes.trim()) {
           _agentNotes = fnArgs.notes.trim()
+          this._lastAgentNotes = _agentNotes  // sync to instance for interrupt access
           this.send('qwen-event', { type: 'agent-notes', notes: _agentNotes, turn })
         }
 
@@ -5929,6 +5932,42 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Check if the model called task_complete — end the session
         if (fnName === 'task_complete' && !isError) {
           const summary = fnArgs.summary || text || 'Task completed.'
+
+          // ── Auto-save session notes for resume ──────────────────────────
+          // If the agent didn't explicitly call agent_notes, auto-generate
+          // notes from the session so "carry on" after restart has context.
+          if (!_agentNotes) {
+            const autoNotes = []
+            autoNotes.push(`Task: ${summary.slice(0, 200)}`)
+            // Collect files that were edited
+            const editedFiles = new Set()
+            const readFiles = new Set()
+            for (const m of messages) {
+              if (m.role === 'tool' && typeof m.content === 'string') {
+                const editMatch = m.content.match(/^(?:Wrote|Edited)\s+(.+?)(?:\s|$)/)
+                if (editMatch) editedFiles.add(editMatch[1])
+              }
+              if (m.role === 'assistant' && m.content) {
+                // Extract file paths from read_file calls in tool_calls
+              }
+            }
+            if (editedFiles.size > 0) autoNotes.push(`Files modified: ${[...editedFiles].join(', ')}`)
+            // Collect key findings from assistant messages (last 3 substantive ones)
+            const assistantFindings = messages
+              .filter(m => m.role === 'assistant' && m.content && m.content.length > 50)
+              .slice(-3)
+              .map(m => m.content.slice(0, 150))
+            if (assistantFindings.length > 0) {
+              autoNotes.push(`Key findings: ${assistantFindings.join(' | ')}`)
+            }
+            _agentNotes = autoNotes.join('\n')
+          }
+          // Persist notes into the conversation for session resume
+          if (_agentNotes) {
+            this._lastAgentNotes = _agentNotes  // sync to instance
+            messages.push({ role: 'system', content: `[agent_notes]:${_agentNotes}` })
+          }
+
           // ── Memory: session end ─────────────────────────────────────────
           if (memoryClient) {
             memoryClient.archiveRecord('session_end', { session_id: _sessionId, summary }, 'Session ended', {
@@ -6620,6 +6659,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         '  1. Reproduce — run the failing command/test with bash. Read the full error and stack trace.\n' +
         '  2. Locate — use search_files with the ACTUAL names you found in step 0.\n' +
         '  3. Hypothesise — state your root cause theory in one sentence before touching code.\n' +
+        '     IMPORTANT: Call agent_notes NOW with your hypothesis and key findings (file names, line numbers, variable names). This ensures you can resume if interrupted.\n' +
         '  4. Fix — apply the minimal change. One file at a time.\n' +
         '  5. Verify — re-run the failing command. Confirm the error is gone.\n' +
         'Constraint: do NOT skip to step 4 without completing steps 0-3.',
