@@ -4775,7 +4775,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           }
         }
         const _fileExt = fnArgs.path ? path.extname(fnArgs.path).toLowerCase() : ''
-        const _lspApplies = _lspSupportedExts.size === 0 || _lspSupportedExts.has(_fileExt)
+        const _lspApplies = _lspSupportedExts.size > 0 && _lspSupportedExts.has(_fileExt)
 
         // Only run speculative check if this file has failed compilation before
         const _hasCompileHistory = fnArgs.path && (
