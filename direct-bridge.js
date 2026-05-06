@@ -495,6 +495,28 @@ const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'bash_batch',
+      description: 'Execute multiple shell commands sequentially in a single call. Much faster than calling bash repeatedly — saves model round-trips. Commands run in order; if one fails, subsequent commands still execute (unless abort_on_error is true). Use for independent operations like running multiple tests, checking multiple files, or performing setup steps.',
+      parameters: {
+        type: 'object',
+        properties: {
+          commands: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of shell commands to execute in order, e.g. ["npm test", "npm run lint", "git status"]',
+          },
+          abort_on_error: {
+            type: 'boolean',
+            description: 'If true, stop executing after the first command that fails (non-zero exit). Default: false (run all commands regardless).',
+          },
+        },
+        required: ['commands'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_files',
       description: 'Search for patterns in files using grep. Returns matching lines with file paths and line numbers. Pass multiple patterns to search in batch (preferred) — all run in parallel for speed.',
       parameters: {
@@ -2147,6 +2169,46 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           // Close stdin immediately — we don't send input
           proc.stdin.end()
         })
+      }
+      case 'bash_batch': {
+        if (!Array.isArray(args.commands) || args.commands.length === 0) {
+          return { error: 'commands must be a non-empty array of shell command strings' }
+        }
+        // Cap at 20 commands per call to prevent abuse
+        const commands = args.commands.slice(0, 20)
+        const abortOnError = args.abort_on_error === true
+        const results = []
+        let successCount = 0
+        let errorCount = 0
+
+        for (let i = 0; i < commands.length; i++) {
+          const cmd = commands[i]
+          if (typeof cmd !== 'string' || !cmd.trim()) {
+            results.push(`[${i + 1}] ❌ (empty command)`)
+            errorCount++
+            if (abortOnError) break
+            continue
+          }
+          // Execute each command via the existing bash handler
+          const cmdResult = await executeTool('bash', { command: cmd }, cwd, browserInstance, lspManager, inputRequester, notify)
+          if (cmdResult.error) {
+            results.push(`── [${i + 1}] ${cmd} ──\n❌ ${cmdResult.error}`)
+            errorCount++
+            if (abortOnError) {
+              results.push(`\n(aborted — ${commands.length - i - 1} remaining commands skipped)`)
+              break
+            }
+          } else {
+            results.push(`── [${i + 1}] ${cmd} ──\n${cmdResult.result}`)
+            successCount++
+          }
+        }
+
+        if (args.commands.length > 20) {
+          results.push(`\n[Note: only first 20 of ${args.commands.length} commands were executed]`)
+        }
+        const summary = `${successCount} succeeded, ${errorCount} failed`
+        return { result: `${summary}:\n\n${results.join('\n\n')}` }
       }
       case 'update_todos': {
         // update_todos is handled by the renderer via the tool-use/tool-result event flow.
