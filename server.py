@@ -182,16 +182,7 @@ def _get_context_window() -> int:
     Checks both top-level and nested text_config/llm_config for
     max_position_embeddings — VLM models (Qwen3.5-VL, Qwen3.6) store
     the value under text_config, not at the top level.
-
-    IMPORTANT: Cap at 40960 tokens for Apple Silicon memory safety.
-    The Qwen3.6 model advertises 262144 in text_config but actually
-    allocating KV cache for 256K tokens on 64GB RAM causes severe
-    memory pressure (38GB+ swap). The autotune dynamic KV sizing
-    uses this value as the ceiling, so an uncapped value leads to
-    massive over-allocation even for short prompts.
     """
-    _MAX_SAFE_CTX = 40960  # Safe ceiling for 64GB Apple Silicon with 35B 8-bit model
-
     def _extract(cfg: dict) -> int | None:
         # Direct top-level value
         val = cfg.get("max_position_embeddings")
@@ -207,15 +198,13 @@ def _get_context_window() -> int:
         return None
 
     if _config and isinstance(_config, dict):
-        raw = _extract(_config) or 32768
-        return min(raw, _MAX_SAFE_CTX)
+        return _extract(_config) or 32768
     if _model_path:
         try:
             cfg_path = Path(_model_path) / "config.json"
             if cfg_path.exists():
                 with open(cfg_path) as f:
-                    raw = _extract(json.load(f)) or 32768
-                    return min(raw, _MAX_SAFE_CTX)
+                    return _extract(json.load(f)) or 32768
         except Exception:
             pass
     return 32768
