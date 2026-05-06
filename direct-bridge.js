@@ -1789,10 +1789,209 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         }
 
         const content = fs.readFileSync(p, 'utf-8')
-        if (!content.includes(args.old_string)) return { error: `old_string not found in ${args.path}. Make sure it matches exactly. Tip: re-read the file with read_file first to get the current content, then use the exact text from that read.` }
-        const count = content.split(args.old_string).length - 1
+
+        // ── Fuzzy match & auto-recovery for edit_file ──────────────────────
+        // When old_string doesn't match exactly, try common fixups before failing.
+        // This saves the agent from looping on whitespace/line-number mismatches.
+        let _editOldString = args.old_string
+
+        if (!content.includes(_editOldString)) {
+          // Fix 1: Strip line-number prefixes that read_file adds (e.g. "123| ")
+          const stripped = _editOldString.replace(/^\d+\| /gm, '')
+          if (stripped !== _editOldString && content.includes(stripped)) {
+            _editOldString = stripped
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 2: Normalize line endings (CRLF → LF)
+          const lfNormalized = _editOldString.replace(/\r\n/g, '\n')
+          if (lfNormalized !== _editOldString && content.includes(lfNormalized)) {
+            _editOldString = lfNormalized
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 3: Trim trailing whitespace from each line
+          const trimmedLines = _editOldString.split('\n').map(l => l.trimEnd()).join('\n')
+          if (trimmedLines !== _editOldString && content.includes(trimmedLines)) {
+            _editOldString = trimmedLines
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 4: Strip leading/trailing blank lines — agent often adds extra \n
+          const trimmedEnds = _editOldString.replace(/^\n+/, '').replace(/\n+$/, '')
+          if (trimmedEnds !== _editOldString && content.includes(trimmedEnds)) {
+            _editOldString = trimmedEnds
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 5: Tab ↔ space normalization
+          // Try converting tabs to spaces (2 and 4) and spaces to tabs
+          const tabTo2 = _editOldString.replace(/\t/g, '  ')
+          if (tabTo2 !== _editOldString && content.includes(tabTo2)) {
+            _editOldString = tabTo2
+          } else {
+            const tabTo4 = _editOldString.replace(/\t/g, '    ')
+            if (tabTo4 !== _editOldString && content.includes(tabTo4)) {
+              _editOldString = tabTo4
+            } else {
+              // Try spaces → tabs (detect leading spaces pattern)
+              const spacesToTabs = _editOldString.replace(/^( {2,4})/gm, (m) => '\t'.repeat(Math.ceil(m.length / 4)))
+              if (spacesToTabs !== _editOldString && content.includes(spacesToTabs)) {
+                _editOldString = spacesToTabs
+              }
+            }
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 6: Indentation level shift — content matches but at different indent
+          // Detect if removing a uniform indent offset produces a match
+          const oldLines = _editOldString.split('\n')
+          const nonEmpty = oldLines.filter(l => l.trim().length > 0)
+          if (nonEmpty.length > 0) {
+            // Find minimum indent in old_string
+            const oldIndents = nonEmpty.map(l => l.match(/^(\s*)/)[1].length)
+            const minOldIndent = Math.min(...oldIndents)
+            // Try shifting indent by -4, -2, +2, +4 spaces
+            const shifts = [-4, -2, 2, 4]
+            for (const shift of shifts) {
+              const shifted = oldLines.map(l => {
+                if (l.trim().length === 0) return l
+                const currentIndent = l.match(/^(\s*)/)[1].length
+                const newIndent = Math.max(0, currentIndent + shift)
+                return ' '.repeat(newIndent) + l.trimStart()
+              }).join('\n')
+              if (shifted !== _editOldString && content.includes(shifted)) {
+                _editOldString = shifted
+                break
+              }
+            }
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 7: Smart quotes / curly apostrophes → ASCII
+          const asciiQuotes = _editOldString
+            .replace(/[\u2018\u2019]/g, "'")
+            .replace(/[\u201C\u201D]/g, '"')
+            .replace(/\u2014/g, '--')
+            .replace(/\u2013/g, '-')
+            .replace(/\u2026/g, '...')
+          if (asciiQuotes !== _editOldString && content.includes(asciiQuotes)) {
+            _editOldString = asciiQuotes
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 8: HTML entity leakage — model sometimes outputs &lt; &gt; &amp; in code
+          const unescaped = _editOldString
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+          if (unescaped !== _editOldString && content.includes(unescaped)) {
+            _editOldString = unescaped
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // Fix 9: Subset match — old_string has extra lines at start/end that
+          // don't exist in the file. Try trimming 1-2 lines from each end.
+          const oldLines = _editOldString.split('\n')
+          if (oldLines.length >= 4) {
+            // Try removing first line
+            const noFirst = oldLines.slice(1).join('\n')
+            if (content.includes(noFirst)) { _editOldString = noFirst }
+            // Try removing last line
+            else {
+              const noLast = oldLines.slice(0, -1).join('\n')
+              if (content.includes(noLast)) { _editOldString = noLast }
+              // Try removing both
+              else {
+                const noBoth = oldLines.slice(1, -1).join('\n')
+                if (noBoth.split('\n').length >= 2 && content.includes(noBoth)) {
+                  _editOldString = noBoth
+                }
+              }
+            }
+          }
+        }
+
+        if (!content.includes(_editOldString)) {
+          // No auto-fix worked — find the closest matching region and show it
+          // to the agent so it can self-correct in one turn.
+          const oldLines = args.old_string.replace(/^\d+\| /gm, '').split('\n')
+          const contentLines = content.split('\n')
+
+          // Find the best anchor: longest non-trivial line in old_string
+          let anchorLine = ''
+          for (const l of oldLines) {
+            const trimmed = l.trim()
+            if (trimmed.length > anchorLine.length && trimmed.length > 5) {
+              anchorLine = trimmed
+            }
+          }
+          if (!anchorLine) anchorLine = oldLines[0].trim()
+
+          // Search for the anchor in the file
+          let bestIdx = -1
+          for (let i = 0; i < contentLines.length; i++) {
+            if (contentLines[i].includes(anchorLine) || contentLines[i].trim() === anchorLine) {
+              bestIdx = i
+              break
+            }
+          }
+
+          // If exact anchor not found, try substring match (first 30 chars)
+          if (bestIdx === -1 && anchorLine.length > 15) {
+            const sub = anchorLine.slice(0, 30)
+            for (let i = 0; i < contentLines.length; i++) {
+              if (contentLines[i].includes(sub)) {
+                bestIdx = i
+                break
+              }
+            }
+          }
+
+          // Last resort: find the line with the highest word overlap
+          if (bestIdx === -1 && oldLines.length > 0) {
+            const oldWords = new Set(oldLines.join(' ').split(/\s+/).filter(w => w.length > 3))
+            if (oldWords.size > 0) {
+              let bestScore = 0
+              for (let i = 0; i < contentLines.length; i++) {
+                const lineWords = contentLines[i].split(/\s+/).filter(w => w.length > 3)
+                const score = lineWords.filter(w => oldWords.has(w)).length
+                if (score > bestScore) {
+                  bestScore = score
+                  bestIdx = i
+                }
+              }
+              // Only use if we matched at least 3 words
+              if (bestScore < 3) bestIdx = -1
+            }
+          }
+
+          if (bestIdx !== -1) {
+            // Show the actual content around the anchor so the agent can copy it exactly
+            const regionStart = Math.max(0, bestIdx - 2)
+            const regionEnd = Math.min(contentLines.length, bestIdx + oldLines.length + 3)
+            const actual = contentLines.slice(regionStart, regionEnd)
+              .map((l, i) => `${regionStart + i + 1}| ${l}`)
+              .join('\n')
+            return { error: `old_string not found in ${args.path} (no exact match). ` +
+              `A similar region was found near line ${bestIdx + 1}. Here is the ACTUAL content — copy it exactly as old_string:\n\n${actual}` }
+          }
+
+          return { error: `old_string not found in ${args.path}. Make sure it matches exactly. Tip: re-read the file with read_file first to get the current content, then use the exact text from that read.` }
+        }
+        const count = content.split(_editOldString).length - 1
         if (count > 1) return { error: `old_string found ${count} times in ${args.path}. Make it more specific so it matches exactly once.` }
-        const _editedContent = content.replace(args.old_string, args.new_string)
+        const _editedContent = content.replace(_editOldString, args.new_string)
         // Snapshot before-state for undo
         if (notify && notify._sessionId) undoRecord(notify._sessionId, p, content, _editedContent, 'edit_file')
         fs.writeFileSync(p, _editedContent, 'utf-8')
@@ -1839,18 +2038,80 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
             continue
           }
           const fileContent = fs.readFileSync(ep, 'utf-8')
-          if (!fileContent.includes(edit.old_string)) {
+          // Apply same fuzzy-match fixups as edit_file
+          let _batchOld = edit.old_string
+          if (!fileContent.includes(_batchOld)) {
+            const s1 = _batchOld.replace(/^\d+\| /gm, '')
+            if (s1 !== _batchOld && fileContent.includes(s1)) _batchOld = s1
+          }
+          if (!fileContent.includes(_batchOld)) {
+            const s2 = _batchOld.replace(/\r\n/g, '\n')
+            if (s2 !== _batchOld && fileContent.includes(s2)) _batchOld = s2
+          }
+          if (!fileContent.includes(_batchOld)) {
+            const s3 = _batchOld.split('\n').map(l => l.trimEnd()).join('\n')
+            if (s3 !== _batchOld && fileContent.includes(s3)) _batchOld = s3
+          }
+          if (!fileContent.includes(_batchOld)) {
+            const s4 = _batchOld.replace(/^\n+/, '').replace(/\n+$/, '')
+            if (s4 !== _batchOld && fileContent.includes(s4)) _batchOld = s4
+          }
+          if (!fileContent.includes(_batchOld)) {
+            // Tab ↔ space
+            const t2 = _batchOld.replace(/\t/g, '  ')
+            if (t2 !== _batchOld && fileContent.includes(t2)) { _batchOld = t2 }
+            else {
+              const t4 = _batchOld.replace(/\t/g, '    ')
+              if (t4 !== _batchOld && fileContent.includes(t4)) _batchOld = t4
+            }
+          }
+          if (!fileContent.includes(_batchOld)) {
+            // Indent shift
+            const bLines = _batchOld.split('\n')
+            const shifts = [-4, -2, 2, 4]
+            for (const shift of shifts) {
+              const shifted = bLines.map(l => {
+                if (l.trim().length === 0) return l
+                const ci = l.match(/^(\s*)/)[1].length
+                return ' '.repeat(Math.max(0, ci + shift)) + l.trimStart()
+              }).join('\n')
+              if (shifted !== _batchOld && fileContent.includes(shifted)) { _batchOld = shifted; break }
+            }
+          }
+          if (!fileContent.includes(_batchOld)) {
+            // Smart quotes → ASCII
+            const aq = _batchOld.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')
+            if (aq !== _batchOld && fileContent.includes(aq)) _batchOld = aq
+          }
+          if (!fileContent.includes(_batchOld)) {
+            // HTML entities
+            const ue = _batchOld.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+            if (ue !== _batchOld && fileContent.includes(ue)) _batchOld = ue
+          }
+          if (!fileContent.includes(_batchOld)) {
+            // Subset: trim first/last line
+            const bLines = _batchOld.split('\n')
+            if (bLines.length >= 4) {
+              const noFirst = bLines.slice(1).join('\n')
+              if (fileContent.includes(noFirst)) { _batchOld = noFirst }
+              else {
+                const noLast = bLines.slice(0, -1).join('\n')
+                if (fileContent.includes(noLast)) _batchOld = noLast
+              }
+            }
+          }
+          if (!fileContent.includes(_batchOld)) {
             results.push(`Edit ${i + 1} (${edit.path}): ❌ old_string not found`)
             errorCount++
             continue
           }
-          const matchCount = fileContent.split(edit.old_string).length - 1
+          const matchCount = fileContent.split(_batchOld).length - 1
           if (matchCount > 1) {
             results.push(`Edit ${i + 1} (${edit.path}): ❌ old_string found ${matchCount} times — make it more specific`)
             errorCount++
             continue
           }
-          const newContent = fileContent.replace(edit.old_string, edit.new_string)
+          const newContent = fileContent.replace(_batchOld, edit.new_string)
           if (notify && notify._sessionId) undoRecord(notify._sessionId, ep, fileContent, newContent, 'edit_files')
           fs.writeFileSync(ep, newContent, 'utf-8')
           results.push(`Edit ${i + 1} (${edit.path}): ✅ Applied`)
