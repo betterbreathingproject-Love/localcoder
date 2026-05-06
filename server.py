@@ -1089,6 +1089,110 @@ def list_models():
     }
 
 
+class VisionInferenceRequest(BaseModel):
+    """Request body for /admin/vision-inference — hot-swap to vision mode."""
+    messages: list[Message]
+    max_tokens: Optional[int] = 1024
+
+
+@app.post("/admin/vision-inference")
+async def admin_vision_inference(req: VisionInferenceRequest):
+    """
+    Hot-swap the primary model into vision mode (mlx_vlm), run a single
+    vision inference, then swap back to text-only (mlx_lm) for speed.
+
+    This gives the full 35B model's intelligence on visual analysis without
+    permanently sacrificing the 2× text generation speed. Typical overhead
+    is ~8-12s for the swap cycle (unload + vlm load + inference + lm reload).
+
+    Use selectively — e.g. to review a webpage screenshot for quality.
+    """
+    global _model, _processor, _config, _model_is_vision, _model_id
+
+    if _model_path is None:
+        raise HTTPException(503, "No model loaded — cannot perform vision inference")
+
+    sem = _get_inference_semaphore()
+    async with sem:
+        saved_model_path = _model_path
+        t0 = time.time()
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Step 1: Unload text-only model
+            _unload_model()
+            print(f"[vision-swap] Unloaded text-only model ({time.time()-t0:.1f}s)", file=sys.stderr)
+
+            # Step 2: Load as vision model via mlx_vlm
+            def _load_vision():
+                global _model, _processor, _config, _model_is_vision, _model_id, _model_path
+                from mlx_vlm import load as vlm_load
+                _model, _processor = vlm_load(saved_model_path)
+                # mlx_vlm load returns (model, processor) — config is on the model
+                _config = getattr(_model, 'config', None)
+                _model_is_vision = True
+                _model_path = saved_model_path
+                raw_id = str(Path(saved_model_path).relative_to(_models_root))
+                _model_id = f"qwen3-vl-{raw_id.replace('/', '-')}"
+                print(f"[vision-swap] Loaded as vision model (mlx_vlm)", file=sys.stderr)
+
+            await loop.run_in_executor(None, _load_vision)
+            print(f"[vision-swap] Vision model ready ({time.time()-t0:.1f}s)", file=sys.stderr)
+
+            # Step 3: Run vision inference
+            text_prompt, images = extract_text_and_images(req.messages)
+
+            def _run_vision_generate():
+                from mlx_vlm import generate as vlm_generate
+                from mlx_vlm.prompt_utils import apply_chat_template
+                prompt = apply_chat_template(
+                    _processor, _config, text_prompt,
+                    images=images if images else None,
+                )
+                with _metal_lock:
+                    output = vlm_generate(
+                        _model, _processor, prompt,
+                        images=images if images else None,
+                        max_tokens=min(req.max_tokens or 1024, 2048),
+                        verbose=False,
+                    )
+                return output
+
+            output = await loop.run_in_executor(None, _run_vision_generate)
+            print(f"[vision-swap] Vision inference done ({time.time()-t0:.1f}s)", file=sys.stderr)
+
+            # Clean up temp image files
+            _cleanup_images(images)
+
+            # Step 4: Swap back to text-only for speed
+            _unload_model()
+            await loop.run_in_executor(None, load_model, saved_model_path)
+            print(f"[vision-swap] Back to text-only ({time.time()-t0:.1f}s total)", file=sys.stderr)
+
+            # Return standard chat completion response
+            import uuid as _uuid
+            cid = f"chatcmpl-{_uuid.uuid4().hex[:12]}"
+            return {
+                "id": cid,
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": _model_id or "vision-swap",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": output}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": len(output) // 4, "total_tokens": len(output) // 4},
+                "vision_swap_time_s": round(time.time() - t0, 1),
+            }
+
+        except Exception as e:
+            # If anything fails, try to restore text-only mode
+            print(f"[vision-swap] Error: {e} — restoring text-only model", file=sys.stderr)
+            try:
+                _unload_model()
+                await loop.run_in_executor(None, load_model, saved_model_path)
+            except Exception as restore_err:
+                print(f"[vision-swap] CRITICAL: Failed to restore model: {restore_err}", file=sys.stderr)
+            raise HTTPException(500, f"Vision inference failed: {e}")
+
+
 @app.post("/admin/load")
 async def admin_load(req: LoadRequest):
     # Acquire the inference semaphore so we don't swap the model while an

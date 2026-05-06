@@ -723,6 +723,24 @@ const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'vision_review',
+      description: 'Take a screenshot of a local HTML file or URL and analyze it with the vision model. Use this to visually review your work — check layout, images, colors, spacing, broken elements, etc. Returns a detailed visual critique. Use after writing/editing web pages to catch issues like bad stock images, broken layouts, or visual bugs that you cannot detect from code alone.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'URL (http://...) or relative file path to screenshot (e.g. "index.html")' },
+          prompt: { type: 'string', description: 'What to focus on in the review. E.g. "Check if the hero image looks professional" or "Review the overall layout and color scheme". Defaults to a general visual quality review.' },
+          width: { type: 'number', description: 'Viewport width in pixels (default: 1280)' },
+          height: { type: 'number', description: 'Viewport height in pixels (default: 900)' },
+          full_page: { type: 'boolean', description: 'Capture the full scrollable page, not just the viewport (default: false)' },
+        },
+        required: ['target'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'undo_edit',
       description: 'Undo a previous file edit. Reverts the file to its state before the edit was applied. Call with no arguments to undo the most recent edit, or pass an index (0 = most recent, 1 = second most recent, etc.). Use undo_list first to see what can be undone.',
       parameters: {
@@ -2792,6 +2810,88 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         if (result.error) return { error: result.error }
         _scheduleAutoCommit(cwd)
         return { result: `✓ Undone: ${result.filePath} — restored (${result.restored})` }
+      }
+      case 'vision_review': {
+        if (!args.target || typeof args.target !== 'string') {
+          return { error: 'target is required (URL or file path to screenshot)' }
+        }
+        let reviewUrl = args.target.trim()
+        // Resolve local files to file:// URLs
+        if (!reviewUrl.startsWith('http://') && !reviewUrl.startsWith('https://') && !reviewUrl.startsWith('file://')) {
+          const v = validatePath(reviewUrl)
+          if (v.error) return v
+          if (!fs.existsSync(v.resolved)) return { error: `File not found: ${reviewUrl}` }
+          reviewUrl = `file://${v.resolved}`
+        }
+        // Use Playwright to take a screenshot
+        const _pw = require('playwright')
+        let _reviewBrowser = null
+        try {
+          const vpWidth = args.width || 1280
+          const vpHeight = args.height || 900
+          _reviewBrowser = await _pw.chromium.launch({ headless: true })
+          const _reviewPage = await _reviewBrowser.newPage({ viewport: { width: vpWidth, height: vpHeight } })
+          await _reviewPage.goto(reviewUrl, { waitUntil: 'networkidle', timeout: 30000 })
+          // Small delay for any animations/transitions to settle
+          await new Promise(r => setTimeout(r, 500))
+          const screenshotBuf = await _reviewPage.screenshot({
+            fullPage: args.full_page || false,
+            type: 'jpeg',
+            quality: 80,
+          })
+          await _reviewBrowser.close()
+          _reviewBrowser = null
+
+          // Send screenshot to the vision-swap endpoint — this hot-swaps the
+          // primary 35B model into vision mode (mlx_vlm), does the inference
+          // with full intelligence, then swaps back to text-only for speed.
+          const imgB64 = `data:image/jpeg;base64,${screenshotBuf.toString('base64')}`
+          const reviewPrompt = args.prompt ||
+            'Review this webpage screenshot for visual quality. Focus on:\n' +
+            '- Image quality: Are stock images relevant, high-quality, and professional? Or are they generic/ugly/broken?\n' +
+            '- Layout: Is spacing consistent? Are elements aligned properly?\n' +
+            '- Typography: Is text readable? Are font sizes appropriate?\n' +
+            '- Colors: Is the color scheme cohesive and professional?\n' +
+            '- Overall impression: Does this look polished or amateurish?\n' +
+            'Be specific about what needs fixing and where on the page.'
+          const visionContent = [
+            { type: 'text', text: reviewPrompt },
+            { type: 'image_url', image_url: { url: imgB64 } },
+          ]
+          const visionBody = JSON.stringify({
+            messages: [{ role: 'user', content: visionContent }],
+            max_tokens: 1024,
+          })
+          if (notify && notify.send) {
+            notify.send('qwen-event', { type: 'system', subtype: 'debug', data: '🔄 Vision swap: loading 35B in vision mode for review...' })
+          }
+          const visionResult = await new Promise((resolve, reject) => {
+            const req = http.request({
+              hostname: '127.0.0.1', port: SERVER_PORT,
+              path: '/admin/vision-inference', method: 'POST',
+              timeout: 180000, // 3 min — includes model swap time
+              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(visionBody) },
+            }, (res) => {
+              let data = ''
+              res.on('data', chunk => data += chunk)
+              res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error(data || 'Empty response')) } })
+            })
+            req.on('timeout', () => { req.destroy(); reject(new Error('Vision review timed out (180s) — model swap may have failed')) })
+            req.on('error', reject)
+            req.write(visionBody)
+            req.end()
+          })
+          const reviewText = visionResult.choices?.[0]?.message?.content || 'Vision model returned no analysis.'
+          const swapTime = visionResult.vision_swap_time_s || '?'
+          if (notify && notify.send) {
+            notify.send('qwen-event', { type: 'vision-analysis', text: `[Vision Review: ${args.target}]\n${reviewText}` })
+            notify.send('qwen-event', { type: 'system', subtype: 'debug', data: `✅ Vision review complete (${swapTime}s swap cycle)` })
+          }
+          return { result: `[Vision Review of ${args.target} — 35B vision model, ${swapTime}s swap]\n\n${reviewText}` }
+        } catch (err) {
+          if (_reviewBrowser) { try { await _reviewBrowser.close() } catch {} }
+          return { error: `vision_review failed: ${err.message}` }
+        }
       }
       case 'open_browser': {
         if (!args.target || typeof args.target !== 'string') {
