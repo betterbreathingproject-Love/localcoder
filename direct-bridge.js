@@ -5004,9 +5004,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       // ── Performance: auto-coalesce multiple edit_file into edit_files ───
-      // When the model returns 2+ edit_file calls on DIFFERENT files in one
-      // turn, merge them into a single edit_files call. Edits on the same
-      // file must stay sequential (each depends on the previous edit's result).
+      // When the model returns 2+ edit_file calls in one turn, merge them
+      // into a single edit_files call. Edits on the same file are applied
+      // sequentially within the batch (order preserved).
       if (toolCalls.length >= 2) {
         const editFileCalls = toolCalls.filter(tc => tc.function.name === 'edit_file')
         if (editFileCalls.length >= 2) {
@@ -5016,13 +5016,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               return a.path && typeof a.old_string === 'string' && typeof a.new_string === 'string'
             } catch { return false }
           })
-          // Group by file path — only coalesce if all edits are on different files
-          const editPaths = validEdits.map(tc => {
-            try { return JSON.parse(tc.function.arguments).path } catch { return null }
-          })
-          const uniquePaths = new Set(editPaths.filter(Boolean))
-          if (validEdits.length >= 2 && uniquePaths.size === validEdits.length) {
-            // All edits are on different files — safe to batch
+          if (validEdits.length >= 2) {
+            // All edits batch together — edit_files handles same-file edits sequentially
             const edits = validEdits.map(tc => {
               try { return JSON.parse(tc.function.arguments) } catch { return null }
             }).filter(Boolean)
@@ -5052,6 +5047,134 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
             // Track coalesced IDs
             for (const tc of validEdits) this._coalescedToolCallIds.add(tc.id)
+          }
+        }
+      }
+
+      // ── Performance: auto-coalesce multiple search_files into batch ─────
+      // When the model returns 2+ search_files calls, merge their patterns
+      // into a single call with the patterns array.
+      if (toolCalls.length >= 2) {
+        const searchCalls = toolCalls.filter(tc => tc.function.name === 'search_files')
+        if (searchCalls.length >= 2) {
+          const validSearches = searchCalls.filter(tc => {
+            try {
+              const a = JSON.parse(tc.function.arguments)
+              return a.pattern || (a.patterns && a.patterns.length > 0)
+            } catch { return false }
+          })
+          if (validSearches.length >= 2) {
+            // Merge all patterns into one call
+            const allPatterns = []
+            let searchPath = '.'
+            let searchInclude = null
+            for (const tc of validSearches) {
+              try {
+                const a = JSON.parse(tc.function.arguments)
+                if (a.patterns) allPatterns.push(...a.patterns)
+                else if (a.pattern) allPatterns.push(a.pattern)
+                if (a.path) searchPath = a.path
+                if (a.include) searchInclude = a.include
+              } catch { /* skip */ }
+            }
+
+            this.send('qwen-event', { type: 'system', subtype: 'debug', data: `⚡ Auto-coalescing ${validSearches.length} search_files into batch(${allPatterns.length} patterns)` })
+
+            const batchArgs = { patterns: allPatterns, path: searchPath }
+            if (searchInclude) batchArgs.include = searchInclude
+            const batchResult = await executeTool(
+              'search_files', batchArgs, cwd,
+              this._browserInstance, this._lspManager, this._inputRequester,
+              { send: this.send.bind(this), _sessionId }
+            )
+
+            const resultContent = batchResult.error || batchResult.result || ''
+            // Feed back grouped results to each original call
+            for (let i = 0; i < validSearches.length; i++) {
+              const tc = validSearches[i]
+              let tcPattern
+              try {
+                const a = JSON.parse(tc.function.arguments)
+                tcPattern = a.pattern || (a.patterns && a.patterns[0]) || '?'
+              } catch { tcPattern = '?' }
+              // Extract this pattern's section from grouped output
+              const sectionHeader = `── ${tcPattern} ──`
+              const headerIdx = resultContent.indexOf(sectionHeader)
+              let sectionContent
+              if (headerIdx >= 0) {
+                const nextSection = resultContent.indexOf('\n\n── ', headerIdx + sectionHeader.length)
+                sectionContent = nextSection >= 0
+                  ? resultContent.slice(headerIdx, nextSection)
+                  : resultContent.slice(headerIdx)
+              } else {
+                // Single pattern result or couldn't split — give full result to first, reference to rest
+                sectionContent = i === 0 ? resultContent : `(included in batch search above)`
+              }
+              this.send('qwen-event', {
+                type: 'tool-result',
+                tool_use_id: tc.id,
+                content: sectionContent.slice(0, 200) + (sectionContent.length > 200 ? '...' : ''),
+                is_error: !!batchResult.error,
+              })
+              messages.push({ role: 'tool', tool_call_id: tc.id, content: sectionContent })
+            }
+            for (const tc of validSearches) this._coalescedToolCallIds.add(tc.id)
+          }
+        }
+      }
+
+      // ── Performance: auto-coalesce multiple bash into bash_batch ────────
+      // When the model returns 2+ bash calls in one turn, merge them into
+      // a single bash_batch call for sequential execution without round-trips.
+      if (toolCalls.length >= 2) {
+        const bashCalls = toolCalls.filter(tc => tc.function.name === 'bash')
+        if (bashCalls.length >= 2) {
+          const validBash = bashCalls.filter(tc => {
+            try {
+              const a = JSON.parse(tc.function.arguments)
+              return a.command && typeof a.command === 'string'
+            } catch { return false }
+          })
+          if (validBash.length >= 2) {
+            const commands = validBash.map(tc => {
+              try { return JSON.parse(tc.function.arguments).command } catch { return null }
+            }).filter(Boolean)
+
+            this.send('qwen-event', { type: 'system', subtype: 'debug', data: `⚡ Auto-coalescing ${validBash.length} bash calls into bash_batch(${commands.length} commands)` })
+
+            const batchResult = await executeTool(
+              'bash_batch', { commands }, cwd,
+              this._browserInstance, this._lspManager, this._inputRequester,
+              { send: this.send.bind(this), _sessionId }
+            )
+
+            const resultContent = batchResult.error || batchResult.result || ''
+            // Extract per-command results
+            for (let i = 0; i < validBash.length; i++) {
+              const tc = validBash[i]
+              const cmd = commands[i] || '?'
+              // Find this command's section in the output
+              const cmdHeader = `── [${i + 1}] ${cmd} ──`
+              const headerIdx = resultContent.indexOf(cmdHeader)
+              let cmdContent
+              if (headerIdx >= 0) {
+                const nextCmd = resultContent.indexOf(`\n\n── [${i + 2}]`, headerIdx)
+                cmdContent = nextCmd >= 0
+                  ? resultContent.slice(headerIdx + cmdHeader.length, nextCmd).trim()
+                  : resultContent.slice(headerIdx + cmdHeader.length).trim()
+              } else {
+                cmdContent = i === 0 ? resultContent : `(included in batch above)`
+              }
+              const isErr = cmdContent.includes('❌') || cmdContent.includes('Command failed')
+              this.send('qwen-event', {
+                type: 'tool-result',
+                tool_use_id: tc.id,
+                content: cmdContent.slice(0, 200) + (cmdContent.length > 200 ? '...' : ''),
+                is_error: isErr,
+              })
+              messages.push({ role: 'tool', tool_call_id: tc.id, content: cmdContent })
+            }
+            for (const tc of validBash) this._coalescedToolCallIds.add(tc.id)
           }
         }
       }
