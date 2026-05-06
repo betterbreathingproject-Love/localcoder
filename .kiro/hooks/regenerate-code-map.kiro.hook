@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "name": "Regenerate Code Map",
+  "description": "When a code file is created, saved, or deleted, regenerate .maccoder/steering/code-map.md so the agent always reads an up-to-date symbol index before running search_files.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.js",
+      "*.jsx",
+      "*.ts",
+      "*.tsx",
+      "*.py",
+      "*.swift",
+      "*.html",
+      "*.htm",
+      "*.rs",
+      "*.go",
+      "*.java"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "node -e \"require('./project-map-generator').generateCodeMap(process.cwd())\"",
+    "timeout": 15
+  }
+}
