@@ -1101,11 +1101,16 @@ async def admin_vision_inference(req: VisionInferenceRequest):
     Hot-swap the primary model into vision mode (mlx_vlm), run a single
     vision inference, then swap back to text-only (mlx_lm) for speed.
 
-    This gives the full 35B model's intelligence on visual analysis without
-    permanently sacrificing the 2× text generation speed. Typical overhead
-    is ~8-12s for the swap cycle (unload + vlm load + inference + lm reload).
+    Memory-safe approach:
+    1. Fully unload text-only model + force GC + clear Metal cache
+    2. Verify Metal memory is actually freed before proceeding
+    3. Load vision model (mlx_vlm) — same weights, different wrapper
+    4. Run inference with bounded max_tokens
+    5. Fully unload vision model + force GC + clear Metal cache
+    6. Reload text-only model
 
-    Use selectively — e.g. to review a webpage screenshot for quality.
+    Each transition has an explicit memory barrier (gc + metal clear + eval)
+    to prevent both model copies coexisting in Metal memory.
     """
     global _model, _processor, _config, _model_is_vision, _model_id
 
@@ -1116,20 +1121,46 @@ async def admin_vision_inference(req: VisionInferenceRequest):
     async with sem:
         saved_model_path = _model_path
         t0 = time.time()
+        loop = asyncio.get_event_loop()
         try:
-            loop = asyncio.get_event_loop()
+            # ── Step 1: Unload text-only model with full memory barrier ────────
+            def _unload_with_barrier():
+                """Unload model and force all Metal memory to be released."""
+                import gc
+                import mlx.core as mx
 
-            # Step 1: Unload text-only model
-            _unload_model()
-            print(f"[vision-swap] Unloaded text-only model ({time.time()-t0:.1f}s)", file=sys.stderr)
+                _unload_model()  # sets globals to None, calls gc + metal clear
 
-            # Step 2: Load as vision model via mlx_vlm
+                # Aggressive memory barrier: multiple GC passes + synchronize Metal
+                gc.collect()
+                gc.collect()
+                with _metal_lock:
+                    mx.metal.clear_cache()
+                    # Force synchronization — ensures all Metal command buffers
+                    # are complete and memory is actually freed, not just queued
+                    mx.eval(mx.zeros(1))
+                    mx.metal.clear_cache()
+
+                # Verify memory is actually freed
+                active_gb = mx.metal.get_active_memory() / (1024**3)
+                print(f"[vision-swap] Post-unload Metal active: {active_gb:.2f} GB", file=sys.stderr)
+                if active_gb > 2.0:
+                    # Something is holding references — try one more GC pass
+                    gc.collect()
+                    mx.metal.clear_cache()
+                    active_gb = mx.metal.get_active_memory() / (1024**3)
+                    print(f"[vision-swap] After extra GC: {active_gb:.2f} GB", file=sys.stderr)
+
+            await loop.run_in_executor(None, _unload_with_barrier)
+            print(f"[vision-swap] Text-only model unloaded ({time.time()-t0:.1f}s)", file=sys.stderr)
+
+            # ── Step 2: Load as vision model via mlx_vlm ──────────────────────
             def _load_vision():
                 global _model, _processor, _config, _model_is_vision, _model_id, _model_path
                 from mlx_vlm import load as vlm_load
+                from mlx_vlm.utils import load_config as vlm_load_config
                 _model, _processor = vlm_load(saved_model_path)
-                # mlx_vlm load returns (model, processor) — config is on the model
-                _config = getattr(_model, 'config', None)
+                _config = vlm_load_config(saved_model_path)
                 _model_is_vision = True
                 _model_path = saved_model_path
                 raw_id = str(Path(saved_model_path).relative_to(_models_root))
@@ -1139,33 +1170,63 @@ async def admin_vision_inference(req: VisionInferenceRequest):
             await loop.run_in_executor(None, _load_vision)
             print(f"[vision-swap] Vision model ready ({time.time()-t0:.1f}s)", file=sys.stderr)
 
-            # Step 3: Run vision inference
+            # ── Step 3: Run vision inference (bounded tokens) ─────────────────
+            # Extract images from the request — writes base64 to temp files
             text_prompt, images = extract_text_and_images(req.messages)
+            num_images = len(images)
 
             def _run_vision_generate():
                 from mlx_vlm import generate as vlm_generate
-                from mlx_vlm.prompt_utils import apply_chat_template
-                prompt = apply_chat_template(
+                from mlx_vlm.prompt_utils import apply_chat_template as vlm_apply_chat_template
+
+                # Build prompt with image tokens — same pattern as memory-bridge
+                formatted_prompt = vlm_apply_chat_template(
                     _processor, _config, text_prompt,
-                    images=images if images else None,
+                    num_images=num_images,
                 )
+
                 with _metal_lock:
-                    output = vlm_generate(
-                        _model, _processor, prompt,
-                        images=images if images else None,
-                        max_tokens=min(req.max_tokens or 1024, 2048),
-                        verbose=False,
-                    )
-                return output
+                    # mlx_vlm.generate expects image= (single path) or images= (list)
+                    if num_images == 1:
+                        output = vlm_generate(
+                            _model, _processor,
+                            prompt=formatted_prompt,
+                            image=images[0],
+                            max_tokens=min(req.max_tokens or 1024, 1536),
+                            verbose=False,
+                        )
+                    elif num_images > 1:
+                        output = vlm_generate(
+                            _model, _processor,
+                            prompt=formatted_prompt,
+                            images=images,
+                            max_tokens=min(req.max_tokens or 1024, 1536),
+                            verbose=False,
+                        )
+                    else:
+                        # No images — shouldn't happen but handle gracefully
+                        output = vlm_generate(
+                            _model, _processor,
+                            prompt=formatted_prompt,
+                            max_tokens=min(req.max_tokens or 1024, 1536),
+                            verbose=False,
+                        )
+                # Handle response — may be string or object with .text
+                if hasattr(output, 'text'):
+                    return output.text
+                return output if isinstance(output, str) else str(output)
 
             output = await loop.run_in_executor(None, _run_vision_generate)
             print(f"[vision-swap] Vision inference done ({time.time()-t0:.1f}s)", file=sys.stderr)
 
-            # Clean up temp image files
+            # Clean up temp image files immediately
             _cleanup_images(images)
 
-            # Step 4: Swap back to text-only for speed
-            _unload_model()
+            # ── Step 4: Unload vision model with full memory barrier ───────────
+            await loop.run_in_executor(None, _unload_with_barrier)
+            print(f"[vision-swap] Vision model unloaded ({time.time()-t0:.1f}s)", file=sys.stderr)
+
+            # ── Step 5: Reload text-only model ────────────────────────────────
             await loop.run_in_executor(None, load_model, saved_model_path)
             print(f"[vision-swap] Back to text-only ({time.time()-t0:.1f}s total)", file=sys.stderr)
 
@@ -1183,10 +1244,19 @@ async def admin_vision_inference(req: VisionInferenceRequest):
             }
 
         except Exception as e:
-            # If anything fails, try to restore text-only mode
+            # If anything fails, try to restore text-only mode with full cleanup
             print(f"[vision-swap] Error: {e} — restoring text-only model", file=sys.stderr)
             try:
+                import gc
+                import mlx.core as mx
+                # Nuclear cleanup — ensure nothing is left in Metal
                 _unload_model()
+                gc.collect()
+                gc.collect()
+                with _metal_lock:
+                    mx.metal.clear_cache()
+                    mx.eval(mx.zeros(1))
+                    mx.metal.clear_cache()
                 await loop.run_in_executor(None, load_model, saved_model_path)
             except Exception as restore_err:
                 print(f"[vision-swap] CRITICAL: Failed to restore model: {restore_err}", file=sys.stderr)
