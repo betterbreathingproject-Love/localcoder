@@ -37,6 +37,12 @@ try {
   xcodeTool = require('./xcode-tool')
 } catch (_) {}
 
+// Chrome DevTools MCP — gracefully degrades if npx is unavailable
+let chromeDevTools = null
+try {
+  chromeDevTools = require('./chrome-devtools-mcp')
+} catch (_) {}
+
 // Memory client — gracefully degrades if memory backend is unavailable
 let memoryClient = null
 try {
@@ -688,6 +694,8 @@ const TOOL_DEFS = [
   ...DESKTOP_TOOL_DEFS,
   // Xcode tools — only included when xcodebuildmcp is installed
   ...(xcodeTool ? xcodeTool.XCODE_TOOL_DEFS : []),
+  // Chrome DevTools MCP tools — lets agent see console errors, network, DOM, perf
+  ...(chromeDevTools ? chromeDevTools.DEVTOOLS_TOOL_DEFS : []),
 ]
 
 // ── LSP tool definitions (same shape as TOOL_DEFS entries) ────────────────────
@@ -920,11 +928,14 @@ function getToolDefs(lspManager, agentRole, allowedTools) {
     const needsBrowser = agentRole === 'tester'
     const needsDesktop = agentRole === 'tester'
     const needsXcode = agentRole === 'tester' || agentRole === 'implementation'
+    // DevTools available to tester, debug, and implementation roles
+    const needsDevTools = agentRole === 'tester' || agentRole === 'debug' || agentRole === 'implementation'
     tools = tools.filter(t => {
       const name = t.function.name
       if (BROWSER_NAMES.has(name) && !needsBrowser) return false
       if (DESKTOP_NAMES.has(name) && !needsDesktop) return false
       if (name.startsWith('xcode_') && !needsXcode) return false
+      if (name.startsWith('devtools_') && !needsDevTools) return false
       return true
     })
   }
@@ -1554,6 +1565,11 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
   // Route desktop_* tools to the desktop automation module
   if (name.startsWith('desktop_')) {
     return executeDesktopTool(name, args)
+  }
+
+  // Route devtools_* tools to Chrome DevTools MCP
+  if (name.startsWith('devtools_') && chromeDevTools) {
+    return chromeDevTools.executeDevToolsTool(name, args)
   }
 
   // Route browser_* tools to the playwright instance
@@ -7199,6 +7215,10 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
       await this._browserInstance.closeBrowser().catch(() => {})
     }
     this._browserInstance = null
+    // Stop Chrome DevTools MCP server if running
+    if (chromeDevTools) {
+      try { chromeDevTools.stopDevTools() } catch {}
+    }
   }
 }
 
