@@ -2203,7 +2203,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         // and a code map exists, intercept the search and return the relevant
         // symbols from the code map instead. This stops the "No matches found"
         // loop that wastes turns guessing at names.
-        const _hasPipeGuess = patterns.some(p => p.includes('|') && p.split('|').length >= 3)
+        const _hasPipeGuess = patterns.some(p => p.includes('|') && p.split('|').length >= 2)
         if (_hasPipeGuess) {
           try {
             const _mapPath = require('path').join(cwd, '.maccoder', 'steering', 'code-map.md')
