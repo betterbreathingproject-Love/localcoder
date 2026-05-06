@@ -1132,8 +1132,11 @@ async def admin_vision_inference(req: VisionInferenceRequest):
                 _unload_model()  # sets globals to None, calls gc + metal clear
 
                 # Aggressive memory barrier: multiple GC passes + synchronize Metal
-                gc.collect()
-                gc.collect()
+                # Python ref-counting may not release MLX arrays immediately —
+                # cycle collector is needed for circular refs in model graphs.
+                gc.collect(generation=2)  # full collection
+                gc.collect(generation=2)
+                gc.collect(generation=2)
                 with _metal_lock:
                     mx.metal.clear_cache()
                     # Force synchronization — ensures all Metal command buffers
@@ -1141,17 +1144,28 @@ async def admin_vision_inference(req: VisionInferenceRequest):
                     mx.eval(mx.zeros(1))
                     mx.metal.clear_cache()
 
-                # Verify memory is actually freed
-                active_gb = mx.metal.get_active_memory() / (1024**3)
-                print(f"[vision-swap] Post-unload Metal active: {active_gb:.2f} GB", file=sys.stderr)
-                if active_gb > 2.0:
-                    # Something is holding references — try one more GC pass
-                    gc.collect()
-                    mx.metal.clear_cache()
+            def _wait_for_memory_release(max_wait_s=10.0, target_gb=1.0):
+                """Poll Metal active memory until it drops below target or timeout."""
+                import gc
+                import mlx.core as mx
+                deadline = time.time() + max_wait_s
+                while time.time() < deadline:
                     active_gb = mx.metal.get_active_memory() / (1024**3)
-                    print(f"[vision-swap] After extra GC: {active_gb:.2f} GB", file=sys.stderr)
+                    if active_gb <= target_gb:
+                        print(f"[vision-swap] Metal memory released: {active_gb:.2f} GB", file=sys.stderr)
+                        return True
+                    # Still holding memory — keep pushing GC
+                    gc.collect(generation=2)
+                    with _metal_lock:
+                        mx.metal.clear_cache()
+                    time.sleep(0.3)
+                # Timeout — log but proceed anyway (may cause swap pressure)
+                active_gb = mx.metal.get_active_memory() / (1024**3)
+                print(f"[vision-swap] WARNING: Metal still at {active_gb:.2f} GB after {max_wait_s}s wait", file=sys.stderr)
+                return False
 
             await loop.run_in_executor(None, _unload_with_barrier)
+            await loop.run_in_executor(None, _wait_for_memory_release, 10.0, 1.0)
             print(f"[vision-swap] Text-only model unloaded ({time.time()-t0:.1f}s)", file=sys.stderr)
 
             # ── Step 2: Load as vision model via mlx_vlm ──────────────────────
@@ -1224,6 +1238,7 @@ async def admin_vision_inference(req: VisionInferenceRequest):
 
             # ── Step 4: Unload vision model with full memory barrier ───────────
             await loop.run_in_executor(None, _unload_with_barrier)
+            await loop.run_in_executor(None, _wait_for_memory_release, 10.0, 1.0)
             print(f"[vision-swap] Vision model unloaded ({time.time()-t0:.1f}s)", file=sys.stderr)
 
             # ── Step 5: Reload text-only model ────────────────────────────────
@@ -1247,16 +1262,8 @@ async def admin_vision_inference(req: VisionInferenceRequest):
             # If anything fails, try to restore text-only mode with full cleanup
             print(f"[vision-swap] Error: {e} — restoring text-only model", file=sys.stderr)
             try:
-                import gc
-                import mlx.core as mx
-                # Nuclear cleanup — ensure nothing is left in Metal
-                _unload_model()
-                gc.collect()
-                gc.collect()
-                with _metal_lock:
-                    mx.metal.clear_cache()
-                    mx.eval(mx.zeros(1))
-                    mx.metal.clear_cache()
+                _unload_with_barrier()
+                _wait_for_memory_release(10.0, 1.0)
                 await loop.run_in_executor(None, load_model, saved_model_path)
             except Exception as restore_err:
                 print(f"[vision-swap] CRITICAL: Failed to restore model: {restore_err}", file=sys.stderr)
