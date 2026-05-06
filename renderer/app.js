@@ -2057,7 +2057,7 @@ async function sendAgentMode(prompt, opts = {}) {
         const args = ev.argumentsSoFar || ''
 
         // Show what the agent is generating in the status line and stats bar
-        const WRITE_TOOLS = ['write_file', 'edit_file', 'create_file']
+        const WRITE_TOOLS = ['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'create_file']
         const isWriteTool = WRITE_TOOLS.includes(toolName)
 
         // Extract file path from partial args for a more specific status
@@ -2279,12 +2279,19 @@ async function sendAgentMode(prompt, opts = {}) {
           'read_file': `Reading ${ev.input?.path?.split('/').pop() || 'file'}...`,
           'write_file': `Writing ${ev.input?.path?.split('/').pop() || 'file'}...`,
           'edit_file': `Editing ${ev.input?.path?.split('/').pop() || 'file'}...`,
+          'edit_file_lines': `Editing lines in ${ev.input?.path?.split('/').pop() || 'file'}...`,
+          'edit_files': `Editing multiple files...`,
+          'undo_edit': 'Undoing last edit...',
           'bash': 'Running command...',
           'list_dir': 'Listing directory...',
           'search_files': `Searching for "${(ev.input?.pattern || '').slice(0, 30)}"...`,
           'browser_navigate': `Navigating to ${(ev.input?.url || '').slice(0, 40)}...`,
           'browser_screenshot': 'Taking screenshot...',
           'browser_click': 'Clicking element...',
+          'devtools_console_logs': 'Getting console logs...',
+          'devtools_navigate': `Opening ${(ev.input?.url || '').slice(0, 40)}...`,
+          'devtools_network_errors': 'Checking network errors...',
+          'open_browser': 'Opening in browser...',
           'web_search': `Searching: ${(ev.input?.query || '').slice(0, 30)}...`,
           'web_fetch': 'Fetching page...',
         }
@@ -2335,14 +2342,14 @@ async function sendAgentMode(prompt, opts = {}) {
             }
           }
         }
-        const FILE_TOOLS = ['write_file', 'edit_file', 'create_file', 'bash', 'str_replace_editor']
+        const FILE_TOOLS = ['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'create_file', 'bash', 'str_replace_editor']
         if (!ev.is_error && FILE_TOOLS.some(t => lastToolName.includes(t))) {
           if (currentProject) renderFileTree(currentProject, document.getElementById('fileTree'))
           // Auto-refresh center preview when HTML files are written
           if (typeof autoUpdateCenterPreview === 'function') autoUpdateCenterPreview()
         }
-        // Add inline undo button for write_file / edit_file
-        if (!ev.is_error && (lastToolName === 'write_file' || lastToolName === 'edit_file') && lastTool) {
+        // Add inline undo button for write_file / edit_file / edit_file_lines
+        if (!ev.is_error && (lastToolName === 'write_file' || lastToolName === 'edit_file' || lastToolName === 'edit_file_lines' || lastToolName === 'edit_files') && lastTool) {
           const undoBtn = document.createElement('button')
           undoBtn.className = 'undo-btn'
           undoBtn.innerHTML = '↩ Undo this change'
@@ -2869,7 +2876,7 @@ async function sendAgentMode(prompt, opts = {}) {
                     }
                   }
                 }
-                const FILE_TOOLS = ['write_file', 'edit_file', 'create_file', 'bash']
+                const FILE_TOOLS = ['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'create_file', 'bash']
                 if (!ev.is_error && FILE_TOOLS.some(t => orchToolName.includes(t))) {
                   if (currentProject) renderFileTree(currentProject, document.getElementById('fileTree'))
                   if (typeof autoUpdateCenterPreview === 'function') autoUpdateCenterPreview()
@@ -5572,7 +5579,7 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         const tdToolName = ev.name || ''
         const tdArgs = ev.argumentsSoFar || ''
 
-        const TD_WRITE_TOOLS = ['write_file', 'edit_file', 'create_file']
+        const TD_WRITE_TOOLS = ['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'create_file']
         const tdIsWrite = TD_WRITE_TOOLS.includes(tdToolName)
 
         let tdFile = ''
@@ -5781,7 +5788,7 @@ async function _launchOrchestrator(tasksPath, taskCount) {
             }
           }
         }
-        const FILE_TOOLS = ['write_file', 'edit_file', 'create_file', 'bash']
+        const FILE_TOOLS = ['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'create_file', 'bash']
         if (!ev.is_error && FILE_TOOLS.some(t => orchToolName.includes(t))) {
           if (currentProject) renderFileTree(currentProject, document.getElementById('fileTree'))
           if (typeof autoUpdateCenterPreview === 'function') autoUpdateCenterPreview()
