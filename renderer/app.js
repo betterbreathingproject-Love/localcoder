@@ -2302,6 +2302,17 @@ async function sendAgentMode(prompt, opts = {}) {
       case 'tool-result': {
         // Skip rendering tool-result for update_todos/edit_todos — handled by the todo panel
         if (lastToolName === 'update_todos' || lastToolName === 'edit_todos') {
+          // Still mark the tool block as done so the spinner stops
+          const toolsDiv = document.getElementById(respId+'-tools')
+          if (toolsDiv) {
+            const todoTool = toolsDiv.querySelector(`.tool-block[data-tool-seq="${_agentToolCount}"]`)
+              || toolsDiv.querySelector('.tool-block.running:last-of-type')
+            if (todoTool) {
+              todoTool.className = todoTool.className.replace(/\b(running|done|error)\b/g, '').trim() + ' done'
+              const statusEl = todoTool.querySelector('.tool-status')
+              if (statusEl) { statusEl.className = 'tool-status done'; statusEl.innerHTML = '✓ Done' }
+            }
+          }
           setActivity('📋 Updated progress <span class="activity-dot">●</span>')
           updateAgentStatsBar({ state: 'thinking', inputTokens, outputTokens: outputTokens || tokenCount, toolCount: _agentToolCount, activity: 'Thinking about next step...' })
           break
@@ -2854,6 +2865,17 @@ async function sendAgentMode(prompt, opts = {}) {
                 if (!orchTaskBlockId) break
                 // Skip rendering tool-result for update_todos/edit_todos
                 if (orchToolName === 'update_todos' || orchToolName === 'edit_todos') {
+                  // Mark the tool block as done so the spinner stops
+                  const toolsDiv = document.getElementById(orchTaskBlockId + '-tools')
+                  if (toolsDiv) {
+                    const todoTool = toolsDiv.querySelector(`.tool-block[data-tool-seq="${_agentToolCount}"]`)
+                      || toolsDiv.querySelector('.tool-block.running:last-of-type')
+                    if (todoTool) {
+                      todoTool.className = todoTool.className.replace(/\b(running|done|error)\b/g, '').trim() + ' done'
+                      const statusEl = todoTool.querySelector('.tool-status')
+                      if (statusEl) { statusEl.className = 'tool-status done'; statusEl.innerHTML = '✓ Done' }
+                    }
+                  }
                   updateAgentStatsBar({ state: 'thinking', inputTokens, outputTokens: tokenCount, toolCount: _agentToolCount, activity: 'Thinking about next step...' })
                   break
                 }
@@ -5768,6 +5790,17 @@ async function _launchOrchestrator(tasksPath, taskCount) {
         if (!orchTaskBlockId) break
         // Skip rendering tool-result for update_todos/edit_todos
         if (orchToolName === 'update_todos' || orchToolName === 'edit_todos') {
+          // Mark the tool block as done so the spinner stops
+          const toolsDiv = document.getElementById(orchTaskBlockId + '-tools')
+          if (toolsDiv) {
+            const todoTool = toolsDiv.querySelector(`.tool-block[data-tool-seq="${_agentToolCount}"]`)
+              || toolsDiv.querySelector('.tool-block.running:last-of-type')
+            if (todoTool) {
+              todoTool.className = todoTool.className.replace(/\b(running|done|error)\b/g, '').trim() + ' done'
+              const statusEl = todoTool.querySelector('.tool-status')
+              if (statusEl) { statusEl.className = 'tool-status done'; statusEl.innerHTML = '✓ Done' }
+            }
+          }
           updateAgentStatsBar({ state: 'thinking', inputTokens, outputTokens: tokenCount, toolCount: _agentToolCount, activity: 'Thinking about next step...' })
           break
         }
