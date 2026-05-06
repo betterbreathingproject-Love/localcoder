@@ -446,6 +446,23 @@ const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'edit_file_lines',
+      description: 'Replace a range of lines in a file with new content. Use when edit_file fails due to matching issues on large files — specify exact line numbers instead of matching text. Read the file first to confirm line numbers.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path to edit' },
+          start_line: { type: 'number', description: 'First line to replace (1-indexed, inclusive)' },
+          end_line: { type: 'number', description: 'Last line to replace (1-indexed, inclusive)' },
+          new_content: { type: 'string', description: 'New content to insert in place of the specified lines' },
+        },
+        required: ['path', 'start_line', 'end_line', 'new_content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'edit_files',
       description: 'Apply multiple edits across one or more files in a single call. Much faster than calling edit_file repeatedly. Each edit is a find-and-replace operation. Edits are applied in order.',
       parameters: {
@@ -686,6 +703,20 @@ const TOOL_DEFS = [
           },
         },
         required: ['question'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_browser',
+      description: 'Open a URL or local HTML file in the default browser. Use to preview web pages, HTML games, or any file the user should see. For local files, pass the relative path.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'URL (http://...) or relative file path to open (e.g. "index.html")' },
+        },
+        required: ['target'],
       },
     },
   },
@@ -2000,7 +2031,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
               .map((l, i) => `${regionStart + i + 1}| ${l}`)
               .join('\n')
             return { error: `old_string not found in ${args.path} (no exact match). ` +
-              `A similar region was found near line ${bestIdx + 1}. Here is the ACTUAL content — copy it exactly as old_string:\n\n${actual}` }
+              `A similar region was found near line ${bestIdx + 1}. Here is the ACTUAL content — copy it exactly as old_string, or use edit_file_lines with start_line=${regionStart + 1} end_line=${Math.min(regionEnd, contentLines.length)}:\n\n${actual}` }
           }
 
           return { error: `old_string not found in ${args.path}. Make sure it matches exactly. Tip: re-read the file with read_file first to get the current content, then use the exact text from that read.` }
@@ -2013,6 +2044,56 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         fs.writeFileSync(p, _editedContent, 'utf-8')
         _scheduleAutoCommit(cwd)
         return { result: `Edited ${args.path}` }
+      }
+      case 'edit_file_lines': {
+        // Line-range replacement — bypasses old_string matching entirely.
+        // The agent specifies start_line and end_line (1-indexed, inclusive)
+        // and the content to replace those lines with.
+        if (typeof args.new_content !== 'string') return { error: 'new_content must be a string' }
+        if (typeof args.start_line !== 'number' || typeof args.end_line !== 'number') {
+          return { error: 'start_line and end_line must be numbers (1-indexed)' }
+        }
+        if (args.start_line < 1) return { error: 'start_line must be >= 1' }
+        if (args.end_line < args.start_line) return { error: 'end_line must be >= start_line' }
+
+        const v = validatePath(args.path)
+        if (v.error) return v
+        const p = v.resolved
+        if (!fs.existsSync(p)) return { error: `File not found: ${args.path}` }
+
+        // Guard: reject truncation artifacts
+        const _TRUNC_MARKERS_L = ['[TRUNCATED — original length', '... [truncated', '\n\n[compressed:', 'call read_file again with start_line=']
+        for (const marker of _TRUNC_MARKERS_L) {
+          if (args.new_content.includes(marker)) {
+            return { error: `edit_file_lines rejected: new_content contains truncation artifact. Content is incomplete — split into smaller edits.` }
+          }
+        }
+
+        const content = fs.readFileSync(p, 'utf-8')
+        const lines = content.split('\n')
+        const totalLines = lines.length
+
+        if (args.start_line > totalLines) {
+          return { error: `start_line ${args.start_line} exceeds file length (${totalLines} lines)` }
+        }
+        if (args.end_line > totalLines) {
+          return { error: `end_line ${args.end_line} exceeds file length (${totalLines} lines). File has ${totalLines} lines.` }
+        }
+
+        // Replace the line range
+        const before = lines.slice(0, args.start_line - 1)
+        const after = lines.slice(args.end_line)
+        const newLines = args.new_content.split('\n')
+        const newContent = [...before, ...newLines, ...after].join('\n')
+
+        // Snapshot for undo
+        if (notify && notify._sessionId) undoRecord(notify._sessionId, p, content, newContent, 'edit_file_lines')
+        fs.writeFileSync(p, newContent, 'utf-8')
+        _scheduleAutoCommit(cwd)
+
+        const removedCount = args.end_line - args.start_line + 1
+        const insertedCount = newLines.length
+        return { result: `Edited ${args.path}: replaced lines ${args.start_line}-${args.end_line} (${removedCount} lines) with ${insertedCount} lines.` }
       }
       case 'edit_files': {
         if (!Array.isArray(args.edits) || args.edits.length === 0) {
@@ -2622,6 +2703,27 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           return { result: reply }
         } catch (err) {
           return { result: `(User input timed out: ${err.message})` }
+        }
+      }
+      case 'open_browser': {
+        if (!args.target || typeof args.target !== 'string') {
+          return { error: 'target is required (URL or file path)' }
+        }
+        let url = args.target.trim()
+        // If it's a relative path (not a URL), resolve to absolute file:// URL
+        if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://')) {
+          const v = validatePath(url)
+          if (v.error) return v
+          if (!fs.existsSync(v.resolved)) return { error: `File not found: ${url}` }
+          url = `file://${v.resolved}`
+        }
+        try {
+          // macOS: use 'open' command to launch default browser
+          const { execSync: _execSync } = require('child_process')
+          _execSync(`open "${url.replace(/"/g, '\\"')}"`, { timeout: 5000 })
+          return { result: `Opened ${url} in default browser` }
+        } catch (err) {
+          return { error: `Failed to open browser: ${err.message}` }
         }
       }
       default: {
@@ -4982,7 +5084,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
 
         // Update badge when agent shifts to writing code
-        const _writeTools = new Set(['write_file', 'edit_file'])
+        const _writeTools = new Set(['write_file', 'edit_file', 'edit_file_lines'])
         const _inferredRole = _writeTools.has(fnName) ? 'implementation' : null
         if (_inferredRole && _inferredRole !== this._agentRole) {
           this._agentRole = _inferredRole
@@ -6160,7 +6262,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Paged reads (start_line/end_line) count as 0.5 since they're legitimate
         // navigation of a large file, not aimless re-reading.
         const READ_TOOLS = new Set(['read_file', 'read_files', 'list_dir', 'search_files'])
-        const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'edit_files'])
+        const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'edit_file_lines', 'edit_files'])
         if (READ_TOOLS.has(fnName) && !isError) {
           const isPagedNav = fnName === 'read_file' && (fnArgs.start_line != null || fnArgs.end_line != null)
           consecutiveReadsWithoutWrite += isPagedNav ? 0.5 : 1
@@ -6302,7 +6404,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       const _turnToolNames = toolCalls.map(tc => {
         try { return tc.function.name } catch { return '' }
       })
-      const _turnHadWrite = _turnToolNames.some(n => ['write_file', 'edit_file', 'edit_files'].includes(n))
+      const _turnHadWrite = _turnToolNames.some(n => ['write_file', 'edit_file', 'edit_file_lines', 'edit_files'].includes(n))
       const _turnHadBash = _turnToolNames.includes('bash')
       const _turnHadTodo = _turnToolNames.some(n => ['update_todos', 'edit_todos', 'task_complete'].includes(n))
       // DevTools calls are productive — they gather runtime data the agent can't get from source
