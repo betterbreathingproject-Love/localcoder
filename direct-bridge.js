@@ -2595,8 +2595,50 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
       case 'update_todos': {
         // update_todos is handled by the renderer via the tool-use/tool-result event flow.
         // We just validate and return success here — the renderer picks up the input from the tool-use event.
-        const todos = args.todos
-        if (!Array.isArray(todos)) return { error: 'todos must be an array' }
+        let todos = args.todos
+
+        // ── Auto-repair: model often passes todos in wrong format ──────────
+        if (!Array.isArray(todos)) {
+          // Fix 1: todos is a JSON string — parse it
+          if (typeof todos === 'string') {
+            try { todos = JSON.parse(todos) } catch { /* not valid JSON */ }
+          }
+          // Fix 2: model passed items at top level (no todos wrapper)
+          // e.g. args = [{id:1, content:"...", status:"pending"}, ...]
+          if (!Array.isArray(todos) && Array.isArray(args)) {
+            todos = args
+          }
+          // Fix 3: model nested it as args.todos.todos or args.items
+          if (!Array.isArray(todos) && todos && typeof todos === 'object') {
+            if (Array.isArray(todos.todos)) todos = todos.todos
+            else if (Array.isArray(todos.items)) todos = todos.items
+            else if (Array.isArray(todos.list)) todos = todos.list
+          }
+          // Fix 4: model passed a single todo object — wrap in array
+          if (!Array.isArray(todos) && todos && typeof todos === 'object' && todos.content) {
+            todos = [todos]
+          }
+          // Fix 5: scan all args keys for any array that looks like todos
+          if (!Array.isArray(todos)) {
+            for (const key of Object.keys(args)) {
+              if (Array.isArray(args[key]) && args[key].length > 0 && args[key][0].content) {
+                todos = args[key]
+                break
+              }
+            }
+          }
+          // Update args.todos so the renderer event gets the fixed value
+          if (Array.isArray(todos)) args.todos = todos
+        }
+
+        if (!Array.isArray(todos)) return { error: 'todos must be an array. Pass: update_todos({"todos": [{"id": 1, "content": "task", "status": "pending"}]})' }
+        // Normalize: ensure each item has required fields
+        todos = todos.map((t, i) => ({
+          id: t.id ?? (i + 1),
+          content: t.content || t.text || t.label || t.title || t.description || `Task ${i + 1}`,
+          status: t.status || 'pending',
+        }))
+        args.todos = todos
         const done = todos.filter(t => t.status === 'done' || t.status === 'completed').length
         return { result: `Updated todo list: ${done}/${todos.length} complete` }
       }
@@ -5330,6 +5372,36 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
 
         // Emit tool-use event
+        // For update_todos: auto-repair the todos arg before emitting so the renderer gets valid data
+        if (fnName === 'update_todos' && !Array.isArray(fnArgs.todos)) {
+          let _repaired = fnArgs.todos
+          if (typeof _repaired === 'string') {
+            try { _repaired = JSON.parse(_repaired) } catch { /* not JSON */ }
+          }
+          if (!Array.isArray(_repaired) && Array.isArray(fnArgs)) _repaired = fnArgs
+          if (!Array.isArray(_repaired) && _repaired && typeof _repaired === 'object') {
+            if (Array.isArray(_repaired.todos)) _repaired = _repaired.todos
+            else if (Array.isArray(_repaired.items)) _repaired = _repaired.items
+            else if (Array.isArray(_repaired.list)) _repaired = _repaired.list
+          }
+          if (!Array.isArray(_repaired) && _repaired && typeof _repaired === 'object' && _repaired.content) {
+            _repaired = [_repaired]
+          }
+          if (!Array.isArray(_repaired)) {
+            for (const key of Object.keys(fnArgs)) {
+              if (Array.isArray(fnArgs[key]) && fnArgs[key].length > 0 && fnArgs[key][0].content) {
+                _repaired = fnArgs[key]; break
+              }
+            }
+          }
+          if (Array.isArray(_repaired)) {
+            fnArgs.todos = _repaired.map((t, i) => ({
+              id: t.id ?? (i + 1),
+              content: t.content || t.text || t.label || t.title || t.description || `Task ${i + 1}`,
+              status: t.status || 'pending',
+            }))
+          }
+        }
         this.send('qwen-event', { type: 'tool-use', id: tc.id, name: fnName, input: fnArgs })
 
         // Track todo state for completion checking
