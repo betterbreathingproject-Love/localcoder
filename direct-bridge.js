@@ -3651,7 +3651,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     // command, or completes a task. If the agent goes N turns without any
     // productive action, it's spinning and should be stopped.
     let _unproductiveTurns = 0
-    const _MAX_UNPRODUCTIVE_TURNS = 12  // abort after this many wasted turns
+    const _MAX_UNPRODUCTIVE_TURNS = 20  // abort after this many wasted turns
     // After a compaction pass, skip memory re-injection for a few turns so we
     // don't immediately re-inflate the context we just compressed.
     let _postCompactionCooldown = 0
@@ -4002,7 +4002,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Re-inject read-loop enforcement state after compaction so the agent
         // doesn't lose the pressure to write. The counter survives but the
         // system messages in the array were wiped by compaction.
-        if (consecutiveReadsWithoutWrite >= 5) {
+        if (consecutiveReadsWithoutWrite >= 8) {
           messages.push({
             role: 'system',
             content: `REMINDER: You have made ${consecutiveReadsWithoutWrite} consecutive read calls without writing. ` +
@@ -4953,7 +4953,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // yet, it's gathering context it doesn't need. For file CREATION tasks,
         // the file tree is sufficient. Intercept and tell it to write.
         // Exempt: reads of files the agent has already tried (and failed) to edit.
-        if ((fnName === 'read_files' || fnName === 'read_file') && consecutiveReadsWithoutWrite >= 3) {
+        if ((fnName === 'read_files' || fnName === 'read_file') && consecutiveReadsWithoutWrite >= 8) {
           // Skip this check entirely if reading a file we already tried to edit
           let _preflightArgs = {}
           try { _preflightArgs = JSON.parse(tc.function.arguments) } catch { /* ignore — parsed properly below */ }
@@ -5358,12 +5358,24 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         const isReadOfEditTarget = fnName === 'read_file' && fnArgs.path &&
           (_lastFailedEditPath === fnArgs.path || _editAttemptedPaths.has(fnArgs.path))
         if (consecutiveReadsWithoutWrite >= 7 && _READ_BLOCK_TOOLS.has(fnName) && !isPagedRead && !isReadOfEditTarget) {
+          // Only hard-block if the agent is re-reading the SAME files it already has.
+          // Reading different sections of a large file or different files is legitimate investigation.
+          const readPath = fnArgs.path || (fnArgs.paths && fnArgs.paths[0]) || ''
+          const isNewContent = readPath && !_readFileHistory.has(readPath)
+          if (isNewContent && consecutiveReadsWithoutWrite < 15) {
+            // Allow — agent is reading new files, just nudge
+            messages.push({
+              role: 'system',
+              content: `Note: ${consecutiveReadsWithoutWrite} reads without writing. You're reading new content which is fine, but start writing your fix soon.`,
+            })
+          } else {
           const blockMsg = `REJECTED: You have made ${consecutiveReadsWithoutWrite} consecutive read calls without writing. ` +
             `This call to ${fnName} has been blocked. You MUST call edit_file or write_file next. ` +
             `Use the information already in your context to make your edit.`
           this.send('qwen-event', { type: 'tool-result', tool_use_id: tc.id, content: blockMsg, is_error: true })
           messages.push({ role: 'tool', tool_call_id: tc.id, content: blockMsg })
           continue
+          }
         }
 
         // Execute — use pre-fetched result if available (parallel I/O optimization)
@@ -6169,7 +6181,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           consecutiveReadsWithoutWrite = Math.max(0, consecutiveReadsWithoutWrite - 4)
         }
         // Escalating enforcement — gets progressively more forceful
-        if (consecutiveReadsWithoutWrite === 3) {
+        if (consecutiveReadsWithoutWrite === 5) {
           messages.push({
             role: 'system',
             content: `You have made ${consecutiveReadsWithoutWrite} consecutive read/search calls without writing any code. ` +
@@ -6180,7 +6192,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               `State in one sentence what you learned, then make your edit.`,
           })
           this.send('qwen-event', { type: 'system', subtype: 'warning', data: `⚠️ Read-only loop detected (${consecutiveReadsWithoutWrite} reads, 0 writes) — nudging agent to start writing` })
-        } else if (consecutiveReadsWithoutWrite === 5) {
+        } else if (consecutiveReadsWithoutWrite === 8) {
           messages.push({
             role: 'system',
             content: `STOP READING. You have made ${consecutiveReadsWithoutWrite} read calls without a single write. ` +
@@ -6190,7 +6202,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               `Your NEXT tool call MUST be edit_file or write_file. Any further read calls will be rejected.`,
           })
           this.send('qwen-event', { type: 'system', subtype: 'warning', data: `⚠️ Read-only loop escalation (${consecutiveReadsWithoutWrite} reads) — forcing write` })
-        } else if (consecutiveReadsWithoutWrite >= 7) {
+        } else if (consecutiveReadsWithoutWrite >= 12) {
           // Hard block: reject the read and force a write
           messages.push({
             role: 'system',
@@ -6293,11 +6305,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       const _turnHadWrite = _turnToolNames.some(n => ['write_file', 'edit_file', 'edit_files'].includes(n))
       const _turnHadBash = _turnToolNames.includes('bash')
       const _turnHadTodo = _turnToolNames.some(n => ['update_todos', 'edit_todos', 'task_complete'].includes(n))
+      // DevTools calls are productive — they gather runtime data the agent can't get from source
+      const _turnHadDevTools = _turnToolNames.some(n => n.startsWith('devtools_'))
       // A bash call counts as productive only if it succeeded (not an error)
       const _turnBashSucceeded = _turnHadBash && messages.slice(-toolCalls.length * 2)
         .some(m => m.role === 'tool' && m.content && !m.content.startsWith('Use read_file') && !m.content.includes('Command failed') && !m.content.includes('Command blocked'))
 
-      if (_turnHadWrite || _turnBashSucceeded || _turnHadTodo) {
+      if (_turnHadWrite || _turnBashSucceeded || _turnHadTodo || _turnHadDevTools) {
         _unproductiveTurns = 0  // Reset — agent did something useful
       } else {
         _unproductiveTurns++
@@ -6934,11 +6948,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         'Required sequence:\n' +
         '  0. Context — read the relevant file (or section) FIRST to learn the actual variable/function names used. Do NOT guess names for search_files — read first, then search with the real names you found.\n' +
         '  1. Reproduce — run the failing command/test with bash. Read the full error and stack trace.\n' +
+        '     For web/HTML apps: use devtools_navigate to open the page, then devtools_console_logs to see JavaScript errors and devtools_network_errors for failed requests. This is faster than guessing from source code.\n' +
         '  2. Locate — use search_files with the ACTUAL names you found in step 0.\n' +
         '  3. Hypothesise — state your root cause theory in one sentence before touching code.\n' +
         '     IMPORTANT: Call agent_notes NOW with your hypothesis and key findings (file names, line numbers, variable names). This ensures you can resume if interrupted.\n' +
         '  4. Fix — apply the minimal change. One file at a time.\n' +
-        '  5. Verify — re-run the failing command. Confirm the error is gone.\n' +
+        '  5. Verify — re-run the failing command. For web apps, use devtools_console_logs to confirm the error is gone.\n' +
         'Constraint: do NOT skip to step 4 without completing steps 0-3.',
 
       'tester':
@@ -7007,7 +7022,12 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         '  2. Make one focused change at a time using edit_file.\n' +
         '  3. After each file change, check LSP diagnostics in the tool result. Fix any errors before continuing.\n' +
         '  4. Verify with bash (run tests, check syntax, start the app).\n' +
-        'For FIXING BUGS:\n' +
+        'For FIXING BUGS in web/HTML apps:\n' +
+        '  1. Use devtools_navigate to open the page, then devtools_console_logs to see runtime errors.\n' +
+        '  2. Read the file where the bug lives (use the Code Map line numbers if available).\n' +
+        '  3. Apply the fix with edit_file.\n' +
+        '  4. Verify with devtools_console_logs — confirm the error is gone.\n' +
+        'For FIXING BUGS in other code:\n' +
         '  1. Read the file where the bug lives FIRST (use the Code Map line numbers if available).\n' +
         '  2. Learn the ACTUAL variable/function names from what you read.\n' +
         '  3. Only THEN search with those exact names if needed. NEVER search with pipe-separated guesses like "hit|damage|kill" — this wastes turns.\n' +
