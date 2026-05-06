@@ -1,6 +1,6 @@
 {
   "name": "qwencoder-mac-studio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "QwenCoder Mac Studio — local MLX vision server + vibe coding",
   "main": "main.js",
   "scripts": {
