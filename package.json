@@ -56,6 +56,7 @@
       "search-worker.js",
       "steering-loader.js",
       "steering-generator.js",
+      "project-map-generator.js",
       "projects.js",
       "xcode-tool.js",
       "telegram-bot.js",
