@@ -1241,6 +1241,7 @@ async function loadSessions(preferredId) {
     await restoreChatFromSnapshot()
     await restoreTodos()
     await restoreWorkflowState()
+    _memRestoreNotesFromHistory()
   } else {
     activeSessionId = null; activeSessionType = 'vibe'; conversationHistory = []; clearChatOutput()
   }
@@ -1276,6 +1277,7 @@ async function switchSession(id) {
   await restoreChatFromSnapshot()
   await restoreTodos()
   await restoreWorkflowState()
+  _memRestoreNotesFromHistory()
   updateSessionInfo()
 }
 
@@ -1389,6 +1391,9 @@ function clearChatOutput() {
   const todoPanelBody = document.getElementById('todoPanelBody')
   if (todoPanelBody) todoPanelBody.innerHTML = ''
   currentTodos = []
+
+  // Clear agent notes panel
+  _memRenderNotes(null, null)
 
   // Clear persisted snapshot and todos for this session
   if (activeProjectId && activeSessionId) {
@@ -8036,6 +8041,19 @@ function _memFmtBytes(bytes) {
  * Render agent thinking notes into the notes panel.
  * Called both from live qwen-events and on memoryRefresh.
  */
+function _memRestoreNotesFromHistory() {
+  // Scan conversationHistory backwards for the last [agent_notes]: system message
+  for (let i = conversationHistory.length - 1; i >= 0; i--) {
+    const m = conversationHistory[i]
+    if (m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('[agent_notes]:')) {
+      const notes = m.content.slice('[agent_notes]:'.length).trim()
+      if (notes) { _memRenderNotes(notes, null); return }
+    }
+  }
+  // No notes found — clear the panel
+  _memRenderNotes(null, null)
+}
+
 function _memRenderNotes(notes, turn) {
   const body = document.getElementById('memoryNotesBody')
   const meta = document.getElementById('memoryNotesMeta')
