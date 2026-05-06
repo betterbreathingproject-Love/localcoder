@@ -2827,15 +2827,15 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         const _pw = require('playwright')
         let _reviewBrowser = null
         try {
-          const vpWidth = args.width || 1280
-          const vpHeight = args.height || 900
+          const vpWidth = parseInt(args.width, 10) || 1280
+          const vpHeight = parseInt(args.height, 10) || 900
           _reviewBrowser = await _pw.chromium.launch({ headless: true })
           const _reviewPage = await _reviewBrowser.newPage({ viewport: { width: vpWidth, height: vpHeight } })
           await _reviewPage.goto(reviewUrl, { waitUntil: 'networkidle', timeout: 30000 })
           // Small delay for any animations/transitions to settle
           await new Promise(r => setTimeout(r, 500))
           const screenshotBuf = await _reviewPage.screenshot({
-            fullPage: args.full_page || false,
+            fullPage: args.full_page === true || args.full_page === 'true',
             type: 'jpeg',
             quality: 80,
           })
