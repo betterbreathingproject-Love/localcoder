@@ -52,7 +52,7 @@ Classes/types:
   - `WorkerSink` (line 256)
   - `WindowInputRequester` (line 274)
   - `InputRequester` (line 312)
-  - `DirectBridge` (line 2493)
+  - `DirectBridge` (line 2527)
 Functions:
   - `_findPythonPath()` (line 56)
   - `_loadUndoStore()` (line 80)

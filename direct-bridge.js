@@ -2198,6 +2198,40 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         }
         if (patterns.length === 0) return { error: 'pattern or patterns must be provided. Usage: search_files({"pattern": "term"}) or search_files({"patterns": ["term1", "term2"]})' }
 
+        // ── Pipe-guess interceptor ────────────────────────────────────────
+        // When the agent uses pipe-separated guesses (e.g. "hit|damage|kill|enemy.*death")
+        // and a code map exists, intercept the search and return the relevant
+        // symbols from the code map instead. This stops the "No matches found"
+        // loop that wastes turns guessing at names.
+        const _hasPipeGuess = patterns.some(p => p.includes('|') && p.split('|').length >= 3)
+        if (_hasPipeGuess) {
+          try {
+            const _mapPath = require('path').join(cwd, '.maccoder', 'steering', 'code-map.md')
+            if (fs.existsSync(_mapPath)) {
+              const _mapContent = fs.readFileSync(_mapPath, 'utf-8')
+              // Extract the search terms from the pipe pattern
+              const _searchTerms = patterns.flatMap(p => p.split('|')).map(t => t.replace(/[.*+?^${}()[\]\\]/g, '').trim().toLowerCase()).filter(t => t.length > 2)
+              // Find matching symbols in the code map
+              const _mapLines = _mapContent.split('\n')
+              const _matches = []
+              for (const line of _mapLines) {
+                const lower = line.toLowerCase()
+                if (_searchTerms.some(t => lower.includes(t)) && (line.includes('`') || line.includes('line '))) {
+                  _matches.push(line.trim())
+                }
+              }
+              if (_matches.length > 0) {
+                const hint = `⚠️ PIPE-GUESS DETECTED — you searched with "${patterns[0].slice(0, 60)}" which is a guess.\n\n` +
+                  `The Code Map has these ACTUAL symbols matching your intent:\n` +
+                  _matches.slice(0, 15).join('\n') + '\n\n' +
+                  `USE THESE EXACT NAMES for your next search_files call, or better: read_file at the listed line number directly.\n` +
+                  `Do NOT search with pipe-separated guesses again.`
+                return { result: hint }
+              }
+            }
+          } catch { /* code map not available — fall through to normal search */ }
+        }
+
         const searchV = validatePath(args.path || '.')
         if (searchV.error) return searchV
         const searchPath = searchV.resolved
@@ -6589,6 +6623,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         '  2. Make one focused change at a time using edit_file.\n' +
         '  3. After each file change, check LSP diagnostics in the tool result. Fix any errors before continuing.\n' +
         '  4. Verify with bash (run tests, check syntax, start the app).\n' +
+        'For FIXING BUGS:\n' +
+        '  1. Read the file where the bug lives FIRST (use the Code Map line numbers if available).\n' +
+        '  2. Learn the ACTUAL variable/function names from what you read.\n' +
+        '  3. Only THEN search with those exact names if needed. NEVER search with pipe-separated guesses like "hit|damage|kill" — this wastes turns.\n' +
+        '  4. Apply the fix with edit_file.\n' +
         'CRITICAL: Do NOT read all project files before starting. If you need file paths, use list_dir — do NOT read file contents just to learn what files exist.\n' +
         'Constraint: each write_file call should be under 300 lines for source code. Generated config files (pbxproj, Package.swift, CMakeLists) can be longer.\n' +
         '\n' +
