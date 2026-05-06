@@ -10,14 +10,14 @@ auto_generated: true
 ## Summary
 - Project root: `/Users/matt123/Documents/Matts apps/fix lmstudio kilocode`
 - Files indexed: 30
-- Classes/types: 48
-- Functions: 959
-- Constants: 87
+- Classes/types: 72
+- Functions: 1055
+- Constants: 109
 - Naming convention: PascalCase for classes/types, camelCase for functions and variables, snake_case for functions, SCREAMING_SNAKE for constants
 
 ## Class / type names (use these exact names when searching)
 
-`WindowSink`, `CallbackSink`, `WorkerSink`, `WindowInputRequester`, `InputRequester`, `DirectBridge`, `TripleRequest`, `TripleResponse`, `TemporalQueryRequest`, `ArchiveRecordRequest`, `ArchiveEvent`, `VectorAddRequest`, `VectorSearchRequest`, `RetrieveRequest`, `RetrievalResult`, `RetrieveResponse`, `ExtractRequest`, `ExtractorLoadRequest`, `SessionEnrichRequest`, `SessionCrystallizeRequest`, `MemoryStatus`, `MemoryStats`, `KGClearRequest`, `AssistRequest`, `AssistResponse`, `Message`, `ToolFunction`, `Tool`, `ChatRequest`, `LoadRequest`, `SpeculativeRequest`, `KVCacheRequest`, `PrefixCacheRequest`, `BenchmarkResponse`, `Orchestrator`, `XcodeMCPClient`, `SessionCatalog`, `MiniAppServer`, `LspManager`, `TestGetExtractionSemaphore`, `TestAssistEndpointRouting`, `TestHandlerResponseShapes`, `TestSecretFilteringInAssist`, `TestTimeoutEnforcement`, `TestMemoryStatusFastAssistantEnabled`, `ClusteringService`, `ClusterViewModel`
+`WindowSink`, `CallbackSink`, `WorkerSink`, `WindowInputRequester`, `InputRequester`, `DirectBridge`, `TripleRequest`, `TripleResponse`, `TemporalQueryRequest`, `ArchiveRecordRequest`, `ArchiveEvent`, `VectorAddRequest`, `VectorSearchRequest`, `RetrieveRequest`, `RetrievalResult`, `RetrieveResponse`, `ExtractRequest`, `ExtractorLoadRequest`, `SessionEnrichRequest`, `SessionCrystallizeRequest`, `MemoryStatus`, `MemoryStats`, `KGClearRequest`, `AssistRequest`, `AssistResponse`, `VideoClassification`, `StagedVideo`, `TelegramBotStatus`, `TelegramBotInfo`, `StoryboardSession`, `TelegramResponse`, `TelegramUser`, `TelegramUpdate`, `TelegramMessage`, `TelegramChat`, `TelegramPhotoSize`, `TelegramVideo`, `TelegramDocument`, `TelegramFile`, `SceneVideoResult`, `Message`, `ToolFunction`, `Tool`, `ChatRequest`, `LoadRequest`, `SpeculativeRequest`, `KVCacheRequest`, `PrefixCacheRequest`, `BenchmarkResponse`, `MiniAppStatus`, `ChatResponse`, `StyleRequest`, `WorkflowRequest`, `CharacterRequest`, `SessionResponse`, `HistoryMessage`, `StylePreset`, `MusicGenerateRequest`, `PromptLabRequest`, `VideoGenerateRequest`, `Orchestrator`, `XcodeMCPClient`, `SessionCatalog`, `MiniAppServer`, `LspManager`, `TestGetExtractionSemaphore`, `TestAssistEndpointRouting`, `TestHandlerResponseShapes`, `TestSecretFilteringInAssist`, `TestTimeoutEnforcement`, `TestMemoryStatusFastAssistantEnabled`
 
 ## Event handlers attached in this project
 
@@ -98,6 +98,35 @@ Functions:
   - ... and 52 more
 Constants:
   `_DEFAULT_TOKEN_BUDGET`, `_EXTRACTION_PATTERNS`, `_VALID_ASSIST_TASK_TYPES`, `VALID_AGENT_TYPES`, `ROUTE_TASK_PROMPT`, `VISION_MAX_CHARS`, `_ASSIST_HANDLERS`
+
+### assets/telegram_bot.rs
+
+Classes/types:
+  - `VideoClassification` (line 11)
+  - `StagedVideo` (line 17)
+  - `TelegramBotStatus` (line 27)
+  - `TelegramBotInfo` (line 36)
+  - `StoryboardSession` (line 58)
+  - `TelegramResponse` (line 87)
+  - `TelegramUser` (line 94)
+  - `TelegramUpdate` (line 101)
+  - ... and 7 more
+Functions:
+  - `calculate_backoff_delay(retry_count: u32)` (line 165)
+  - `classify_video(caption: &str)` (line 175)
+  - `stage_video(path: &str, classification: VideoClassification)` (line 187)
+  - `get_staged_videos()` (line 219)
+  - `clear_staged_videos()` (line 227)
+  - `get_bot_status()` (line 236)
+  - `update_status(updater: F)` (line 250)
+  - `validate_token(token: &str)` (line 266)
+  - `send_message(token: &str, chat_id: i64, text: &str)` (line 299)
+  - `send_photo(token: &str, chat_id: i64, photo_path: &str, caption: Option)` (line 369)
+  - `send_video(token: &str, chat_id: i64, video_path: &str, caption: Option)` (line 416)
+  - `send_animation(token: &str, chat_id: i64, gif_path: &str, caption: Option<&)` (line 463)
+  - ... and 39 more
+Constants:
+  `BOT_STATUS`, `BOT_HANDLE`, `BOT_TOKEN`, `STAGED_VIDEOS`, `ACTIVE_CHAT_ID`, `STORYBOARD_SESSION`, `MINIAPP_SESSION`, `TELEGRAM_API_BASE`, `BACKOFF_BASE_DELAY_SECS`, `BACKOFF_MAX_DELAY_SECS`, +6 more
 
 ### server.py
 
@@ -203,6 +232,35 @@ Functions:
   - ... and 12 more
 Constants:
   `TOTAL_STEPS`, `ALL_DEPS`, `ALL_BINARIES`, `WIZARD_PERM_META`, `WIZARD_PERM_STATUS`
+
+### assets/telegram_miniapp.rs
+
+Classes/types:
+  - `MiniAppStatus` (line 51)
+  - `ChatRequest` (line 61)
+  - `ChatResponse` (line 68)
+  - `StyleRequest` (line 77)
+  - `WorkflowRequest` (line 82)
+  - `CharacterRequest` (line 87)
+  - `SessionResponse` (line 96)
+  - `HistoryMessage` (line 108)
+  - ... and 4 more
+Functions:
+  - `get_window_store()` (line 43)
+  - `default_music_duration()` (line 137)
+  - `default_true()` (line 138)
+  - `default_video_width()` (line 173)
+  - `default_video_height()` (line 174)
+  - `default_num_frames()` (line 175)
+  - `default_num_steps()` (line 176)
+  - `default_guidance()` (line 177)
+  - `default_fps()` (line 178)
+  - `default_seed()` (line 179)
+  - `get_status()` (line 184)
+  - `set_public_url(url: &str)` (line 193)
+  - ... and 17 more
+Constants:
+  `MINIAPP_PORT`, `MINIAPP_HANDLE`, `MINIAPP_BASE_URL`, `MINIAPP_PUBLIC_URL`, `TUNNEL_PROCESS`, `MINIAPP_WINDOW`, `MINIAPP_CHAT_ID`, `MUSIC_PROMPTLAB_SYSTEM`, `MINIAPP_HTML`
 
 ### orchestrator.js
 
@@ -317,6 +375,25 @@ Functions:
   - ... and 11 more
 Constants:
   `_STDERR_RING_SIZE`
+
+### project-map-generator.js
+
+Functions:
+  - `collectCodeFiles(projectDir)` (line 62)
+  - `walk(dir)` (line 64)
+  - `extractJsSymbols(source)` (line 95)
+  - `extractPythonSymbols(source)` (line 156)
+  - `extractSwiftSymbols(source)` (line 180)
+  - `extractRustSymbols(source)` (line 199)
+  - `extractGoSymbols(source)` (line 235)
+  - `extractJavaSymbols(source)` (line 262)
+  - `extractKotlinSymbols(source)` (line 289)
+  - `extractCppSymbols(source)` (line 316)
+  - `extractRubySymbols(source)` (line 350)
+  - `extractPhpSymbols(source)` (line 378)
+  - ... and 11 more
+Constants:
+  `CODE_EXTS`, `IGNORE_DIRS`, `MAX_FILES`, `MAX_FILE_BYTES`
 
 ### test/routing-decision.property.test.js
 
@@ -503,23 +580,6 @@ Functions:
   - `test_degraded_when_no_model_loaded(self)` (line 120)
   - `test_all_valid_task_types_degrade_gracefully(self)` (line 128)
   - ... and 33 more
-
-### bench_long_session.py
-
-Classes/types:
-  - `ClusteringService` (line 154)
-  - `ClusterViewModel` (line 209)
-  - `ClusteringService` (line 258)
-Functions:
-  - `build_context(target_tokens: int, tokenizer)` (line 428)
-  - `clear()` (line 456)
-  - `peak_gb()` (line 464)
-  - `active_gb()` (line 471)
-  - `run_turn(model, tokenizer, prompt, draft_model=None, kv_bits=None, num_draft_tokens=4)` (line 478)
-  - `estimate_tokens(text, tokenizer)` (line 501)
-  - `main()` (line 521)
-Constants:
-  `TARGET`, `DRAFT`, `MAX_NEW_TOKENS`, `CONTEXT_CHECKPOINTS`, `SYSTEM_PROMPT`, `TURN_BLOCKS`, `CONFIGS`
 
 ## Search guidance
 

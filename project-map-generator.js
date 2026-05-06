@@ -35,6 +35,13 @@ const CODE_EXTS = new Set([
   '.rs',
   '.go',
   '.java',
+  '.kt', '.kts',
+  '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx',
+  '.rb',
+  '.php',
+  '.dart',
+  '.cs',
+  '.lua',
 ])
 
 const IGNORE_DIRS = new Set([
@@ -189,6 +196,307 @@ function extractSwiftSymbols(source) {
   return out
 }
 
+function extractRustSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // struct, enum, trait, impl
+    const typeMatch = line.match(/^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|trait|union)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // impl blocks — capture the type being implemented
+    const implMatch = line.match(/^\s*impl(?:<[^>]*>)?\s+(?:(\w+)\s+for\s+)?([A-Z]\w*)/)
+    if (implMatch) {
+      const name = implMatch[2]
+      if (!out.classes.some(c => c.name === name)) {
+        out.classes.push({ name, line: lineNum, signature: line.trim().slice(0, 80) })
+      }
+      continue
+    }
+    // fn declarations
+    const fnMatch = line.match(/^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([a-zA-Z_]\w*)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/)
+    if (fnMatch) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // const / static
+    const varMatch = line.match(/^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Z_][A-Z0-9_]*)\s*:/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractGoSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // type Name struct/interface
+    const typeMatch = line.match(/^type\s+([A-Z]\w*)\s+(?:struct|interface)\b/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // func (receiver) Name(...)  or  func Name(...)
+    const fnMatch = line.match(/^func\s+(?:\([^)]*\)\s+)?([a-zA-Z_]\w*)\s*\(([^)]*)\)/)
+    if (fnMatch) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // const block or var block with SCREAMING_SNAKE
+    const varMatch = line.match(/^\s*(?:const|var)\s+([A-Z_][A-Z0-9_]*)\s*[=:]/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractJavaSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class, interface, enum, record, @interface (annotation)
+    const typeMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+|abstract\s+|final\s+|static\s+)*(?:class|interface|enum|record|@interface)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // method declarations (return type + name + parens)
+    const fnMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+|static\s+|final\s+|abstract\s+|synchronized\s+|native\s+|default\s+)*(?:[\w<>\[\],\s]+)\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*(?:throws\s+[\w,\s]+)?\s*\{?/)
+    if (fnMatch && !['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'class', 'interface'].includes(fnMatch[1])) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // static final constants
+    const varMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+)?static\s+final\s+\w+\s+([A-Z_][A-Z0-9_]*)\s*=/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractKotlinSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class, object, interface, enum class, data class, sealed class
+    const typeMatch = line.match(/^\s*(?:public\s+|private\s+|internal\s+|protected\s+|open\s+|abstract\s+|sealed\s+|data\s+|inner\s+)*(?:class|object|interface|enum\s+class)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // fun declarations
+    const fnMatch = line.match(/^\s*(?:public\s+|private\s+|internal\s+|protected\s+|open\s+|override\s+|suspend\s+|inline\s+)*fun\s+(?:<[^>]+>\s+)?([a-zA-Z_]\w*)\s*\(([^)]*)\)/)
+    if (fnMatch) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // const val / companion object constants
+    const varMatch = line.match(/^\s*(?:const\s+val|val|var)\s+([A-Z_][A-Z0-9_]*)\s*[=:]/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractCppSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class, struct, enum, namespace
+    const typeMatch = line.match(/^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|enum(?:\s+class)?|namespace)\s+([A-Z_]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // function/method declarations (return type + name + parens)
+    // Matches: void foo(...), int MyClass::bar(...), static bool baz(...)
+    const fnMatch = line.match(/^\s*(?:static\s+|virtual\s+|inline\s+|explicit\s+|constexpr\s+)*(?:[\w:*&<>]+\s+)+([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*(?:const\s*)?(?:override\s*)?(?:noexcept\s*)?[{;]?\s*$/)
+    if (fnMatch && !['if', 'for', 'while', 'switch', 'catch', 'return', 'class', 'struct', 'delete', 'new'].includes(fnMatch[1])) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // #define MACRO_NAME
+    const defineMatch = line.match(/^#define\s+([A-Z_][A-Z0-9_]*)\b/)
+    if (defineMatch) {
+      out.variables.push({ name: defineMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // constexpr / const globals
+    const varMatch = line.match(/^\s*(?:static\s+)?(?:constexpr|const)\s+\w+\s+([A-Z_][A-Z0-9_]*)\s*=/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractRubySymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class Foo / module Foo
+    const typeMatch = line.match(/^\s*(?:class|module)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // def method_name
+    const fnMatch = line.match(/^\s*def\s+(self\.)?([a-zA-Z_]\w*[?!=]?)\s*(?:\(([^)]*)\))?/)
+    if (fnMatch) {
+      const name = (fnMatch[1] || '') + fnMatch[2]
+      out.functions.push({ name, line: lineNum, signature: `${name}(${fnMatch[3] || ''})` })
+      continue
+    }
+    // CONSTANT = ...
+    const varMatch = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractPhpSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class, interface, trait, enum
+    const typeMatch = line.match(/^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // function declarations
+    const fnMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+|static\s+)*function\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)/)
+    if (fnMatch) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // const / define
+    const constMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+)?const\s+([A-Z_][A-Z0-9_]*)\s*=/)
+    if (constMatch) {
+      out.variables.push({ name: constMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    const defineMatch = line.match(/define\s*\(\s*['"]([A-Z_][A-Z0-9_]*)['"]/)
+    if (defineMatch) {
+      out.variables.push({ name: defineMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractDartSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class, mixin, extension, enum
+    const typeMatch = line.match(/^\s*(?:abstract\s+|sealed\s+)?(?:class|mixin|extension|enum)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // function/method declarations
+    const fnMatch = line.match(/^\s*(?:static\s+|Future\s*<[^>]*>\s+|Stream\s*<[^>]*>\s+|[\w<>]+\s+)?([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*(?:async\s*)?[{=]/)
+    if (fnMatch && !['if', 'for', 'while', 'switch', 'catch', 'return', 'class', 'new'].includes(fnMatch[1])) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // const / final top-level
+    const varMatch = line.match(/^(?:const|final)\s+(?:\w+\s+)?([A-Z_][A-Z0-9_]*)\s*=/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractCSharpSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // class, struct, interface, enum, record
+    const typeMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|sealed\s+|static\s+|partial\s+)*(?:class|struct|interface|enum|record)\s+([A-Z]\w*)/)
+    if (typeMatch) {
+      out.classes.push({ name: typeMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+      continue
+    }
+    // method declarations
+    const fnMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+|internal\s+|static\s+|virtual\s+|override\s+|abstract\s+|async\s+)*(?:[\w<>\[\]?,\s]+)\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*[{=]?/)
+    if (fnMatch && !['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'class', 'struct', 'namespace'].includes(fnMatch[1])) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2].slice(0, 60)})` })
+      continue
+    }
+    // const fields
+    const varMatch = line.match(/^\s*(?:public\s+|private\s+|protected\s+|internal\s+)?(?:static\s+)?(?:readonly\s+)?const\s+\w+\s+([A-Z_][A-Z0-9_]*)\s*=/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
+function extractLuaSymbols(source) {
+  const out = { classes: [], functions: [], variables: [], handlers: [] }
+  const lines = source.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const lineNum = i + 1
+    // function Module.method(...)  or  function Module:method(...)
+    const methodMatch = line.match(/^\s*function\s+([A-Z]\w*)[.:]\s*([a-zA-Z_]\w*)\s*\(([^)]*)\)/)
+    if (methodMatch) {
+      if (!out.classes.some(c => c.name === methodMatch[1])) {
+        out.classes.push({ name: methodMatch[1], line: lineNum, signature: `${methodMatch[1]}` })
+      }
+      out.functions.push({ name: `${methodMatch[1]}.${methodMatch[2]}`, line: lineNum, signature: `${methodMatch[1]}.${methodMatch[2]}(${methodMatch[3]})` })
+      continue
+    }
+    // local function name(...)  or  function name(...)
+    const fnMatch = line.match(/^\s*(?:local\s+)?function\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)/)
+    if (fnMatch) {
+      out.functions.push({ name: fnMatch[1], line: lineNum, signature: `${fnMatch[1]}(${fnMatch[2]})` })
+      continue
+    }
+    // local name = function(...)
+    const localFnMatch = line.match(/^\s*local\s+([a-zA-Z_]\w*)\s*=\s*function\s*\(([^)]*)\)/)
+    if (localFnMatch) {
+      out.functions.push({ name: localFnMatch[1], line: lineNum, signature: `${localFnMatch[1]}(${localFnMatch[2]})` })
+      continue
+    }
+    // SCREAMING_SNAKE constants
+    const varMatch = line.match(/^\s*(?:local\s+)?([A-Z_][A-Z0-9_]{2,})\s*=/)
+    if (varMatch) {
+      out.variables.push({ name: varMatch[1], line: lineNum, signature: line.trim().slice(0, 80) })
+    }
+  }
+  return out
+}
+
 /**
  * Extract <script>...</script> bodies from an HTML file and scan each as JS.
  * This is the case that bit us in the screenshot — the tower-defence game
@@ -226,7 +534,26 @@ function extractSymbols(filePath, ext, source) {
       return extractSwiftSymbols(source)
     case '.html': case '.htm':
       return extractHtmlSymbols(source)
-    // .rs, .go, .java — fall through to generic regex below
+    case '.rs':
+      return extractRustSymbols(source)
+    case '.go':
+      return extractGoSymbols(source)
+    case '.java':
+      return extractJavaSymbols(source)
+    case '.kt': case '.kts':
+      return extractKotlinSymbols(source)
+    case '.c': case '.h': case '.cpp': case '.hpp': case '.cc': case '.cxx':
+      return extractCppSymbols(source)
+    case '.rb':
+      return extractRubySymbols(source)
+    case '.php':
+      return extractPhpSymbols(source)
+    case '.dart':
+      return extractDartSymbols(source)
+    case '.cs':
+      return extractCSharpSymbols(source)
+    case '.lua':
+      return extractLuaSymbols(source)
     default:
       return { classes: [], functions: [], variables: [], handlers: [] }
   }
@@ -426,5 +753,15 @@ module.exports = {
   extractPythonSymbols,
   extractSwiftSymbols,
   extractHtmlSymbols,
+  extractRustSymbols,
+  extractGoSymbols,
+  extractJavaSymbols,
+  extractKotlinSymbols,
+  extractCppSymbols,
+  extractRubySymbols,
+  extractPhpSymbols,
+  extractDartSymbols,
+  extractCSharpSymbols,
+  extractLuaSymbols,
   detectConventions,
 }
