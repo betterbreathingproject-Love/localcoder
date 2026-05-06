@@ -4575,8 +4575,10 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Exempt: reads of files the agent has already tried (and failed) to edit.
         if ((fnName === 'read_files' || fnName === 'read_file') && consecutiveReadsWithoutWrite >= 3) {
           // Skip this check entirely if reading a file we already tried to edit
-          const _preflightPath = fnName === 'read_file' && fnArgs.path
-          const _isEditTargetRead = _preflightPath && (_lastFailedEditPath === fnArgs.path || _editAttemptedPaths.has(fnArgs.path))
+          let _preflightArgs = {}
+          try { _preflightArgs = JSON.parse(tc.function.arguments) } catch { /* ignore — parsed properly below */ }
+          const _preflightPath = fnName === 'read_file' && _preflightArgs.path
+          const _isEditTargetRead = _preflightPath && (_lastFailedEditPath === _preflightArgs.path || _editAttemptedPaths.has(_preflightArgs.path))
           if (!_isEditTargetRead) {
           const hasAnyWrites = messages.some(m => m.role === 'tool' && m.content &&
             (m.content.startsWith('Wrote ') || m.content.startsWith('Edited ') || m.content.includes('edits applied')))
