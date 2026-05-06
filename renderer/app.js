@@ -1937,6 +1937,16 @@ async function sendAgentMode(prompt, opts = {}) {
         }
         break
       }
+      case 'agent-notes-persist': {
+        // Agent was interrupted — persist its notes so "carry on" has context
+        if (typeof ev.notes === 'string' && activeProjectId && activeSessionId) {
+          window.app.appendSessionMsg(activeProjectId, activeSessionId, {
+            role: 'system',
+            content: `[agent_notes]: ${ev.notes}`,
+          }).catch(() => {})
+        }
+        break
+      }
       case 'user-injection': {
         // A mid-run user message was injected into the agent's turn loop.
         // Show it inline in the response block so the conversation stays sequential.

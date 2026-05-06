@@ -6910,6 +6910,14 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
     this._cachedToolDefs = null
     this._cachedToolDefsKey = null
 
+    // ── Persist agent notes on interrupt for session resume ────────────────
+    // If the agent saved notes during this run, emit them so the renderer
+    // can append them to the session history. On next "carry on", the notes
+    // will be found by the _agentNotes restore logic at the start of _agentLoop.
+    if (this._lastAgentNotes) {
+      this.send('qwen-event', { type: 'agent-notes-persist', notes: this._lastAgentNotes })
+    }
+
     // Only call admin abort if we actually had an active inference request.
     // Calling it unconditionally risks aborting the *next* run's inference
     // if the abort HTTP request resolves after the new run has already started
