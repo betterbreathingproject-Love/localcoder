@@ -6102,6 +6102,39 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           } catch { /* non-blocking — don't fail the tool call */ }
         }
 
+        // ── Auto-advance todos on successful writes ──────────────────────
+        // When a write tool succeeds and there's a todo marked in_progress,
+        // auto-mark it done and advance the next pending one to in_progress.
+        // This eliminates the need for the agent to waste a turn calling edit_todos.
+        const _WRITE_TOOLS_AUTO = new Set(['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'bash'])
+        if (!isError && _lastTodos && _WRITE_TOOLS_AUTO.has(fnName)) {
+          const inProgressIdx = _lastTodos.findIndex(t => t.status === 'in_progress')
+          if (inProgressIdx !== -1) {
+            // For bash: only auto-advance if it looks like a verification step
+            // (test pass, build success, lint clean). Don't advance for exploratory commands.
+            let shouldAdvance = fnName !== 'bash'
+            if (fnName === 'bash') {
+              const bashContent = (content || '').toLowerCase()
+              const isVerification = /\b(pass|passed|success|ok|0 error|0 warning|build succeeded|tests? passed|all tests)\b/i.test(bashContent)
+              shouldAdvance = isVerification
+            }
+            if (shouldAdvance) {
+              // If the next tool call in this turn is also a write, don't advance yet.
+              const remainingCalls = toolCalls.slice(toolCalls.indexOf(tc) + 1)
+              const nextIsAlsoWrite = remainingCalls.some(rtc => {
+                try { return _WRITE_TOOLS_AUTO.has(rtc.function.name) } catch { return false }
+              })
+              if (!nextIsAlsoWrite) {
+                _lastTodos[inProgressIdx].status = 'done'
+                // Advance next pending to in_progress
+                const nextPending = _lastTodos.find(t => t.status === 'pending')
+                if (nextPending) nextPending.status = 'in_progress'
+                this.send('qwen-event', { type: 'todo-watch', todos: _lastTodos })
+              }
+            }
+          }
+        }
+
         // Todo watch — await after each tool result to prevent concurrent Metal inference
         if (assistClient && assistClient.TODO_WATCH_ENABLED && _lastTodos) {
           const _todosSnapshot = _lastTodos  // capture current reference
