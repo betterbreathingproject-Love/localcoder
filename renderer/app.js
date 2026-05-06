@@ -4253,13 +4253,36 @@ function setPreviewDevice(name) {
     viewport.className = 'preview-viewport responsive'
     frame.style.width = '100%'
     frame.style.height = '100%'
+    frame.style.transform = ''
     label.textContent = ''
   } else {
     viewport.className = 'preview-viewport device'
     frame.style.width = dev.w + 'px'
     frame.style.height = dev.h + 'px'
     label.textContent = dev.label
+    // Scale to fit within viewport while keeping aspect ratio
+    _fitPreviewDevice()
   }
+}
+
+// Scale the device-mode iframe to fit within the viewport, preserving aspect ratio
+function _fitPreviewDevice() {
+  const viewport = document.getElementById('previewViewport')
+  const frame = document.getElementById('previewFrame')
+  if (!viewport || !frame) return
+  const dev = _previewDevices[_currentPreviewDevice]
+  if (!dev || !dev.w) { frame.style.transform = ''; return }
+
+  // Available space (minus padding)
+  const vw = viewport.clientWidth - 32  // 16px padding each side
+  const vh = viewport.clientHeight - 32
+  if (vw <= 0 || vh <= 0) return
+
+  const scaleX = vw / dev.w
+  const scaleY = vh / dev.h
+  const scale = Math.min(scaleX, scaleY, 1) // never scale up beyond 1
+
+  frame.style.transform = scale < 1 ? `scale(${scale})` : ''
 }
 
 // ── preview pane resize handle ────────────────────────────────────────────
@@ -4270,14 +4293,28 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!handle || !pane || !split) return
 
   let dragging = false
-  handle.addEventListener('mousedown', (e) => {
+
+  function stopDrag() {
+    if (!dragging) return
+    dragging = false
+    handle.classList.remove('dragging')
+    handle.releasePointerCapture && handle.releasePointerCapture(handle._pointerId)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    // Re-fit the device preview after resize
+    _fitPreviewDevice()
+  }
+
+  handle.addEventListener('pointerdown', (e) => {
     e.preventDefault()
     dragging = true
+    handle._pointerId = e.pointerId
+    handle.setPointerCapture(e.pointerId)
     handle.classList.add('dragging')
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   })
-  document.addEventListener('mousemove', (e) => {
+  handle.addEventListener('pointermove', (e) => {
     if (!dragging) return
     const rect = split.getBoundingClientRect()
     const x = e.clientX - rect.left
@@ -4287,13 +4324,16 @@ document.addEventListener('DOMContentLoaded', () => {
     pane.style.width = previewW + 'px'
     pane.style.flex = 'none'
   })
-  document.addEventListener('mouseup', () => {
-    if (!dragging) return
-    dragging = false
-    handle.classList.remove('dragging')
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-  })
+  handle.addEventListener('pointerup', stopDrag)
+  handle.addEventListener('pointercancel', stopDrag)
+  // Safety: also stop on lostpointercapture in case capture is broken
+  handle.addEventListener('lostpointercapture', stopDrag)
+
+  // Re-fit device preview when viewport size changes (e.g. window resize)
+  const viewport = document.getElementById('previewViewport')
+  if (viewport && typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => _fitPreviewDevice()).observe(viewport)
+  }
 })
 
 function refreshPreview() {
