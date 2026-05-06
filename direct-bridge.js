@@ -2608,7 +2608,12 @@ class DirectBridge {
     this.send('qwen-event', { type: 'system', subtype: 'debug', data: `[bridge] run() called — role: ${this._agentRole}` })
     // Prevent concurrent runs — if a previous run is still winding down after
     // interrupt(), wait up to 3s for it to finish before starting the new one.
+    // Also resolve any pending ask_user request so the old run can unblock.
     if (this._running) {
+      if (this._inputRequester && this._inputRequester.hasPendingRequest()) {
+        console.log('[direct-bridge] resolving stale ask_user request (user sent new prompt)')
+        this._inputRequester.resolveReply('(User sent a new message — ask_user cancelled)')
+      }
       const deadline = Date.now() + 3000
       while (this._running && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 100))
@@ -6769,6 +6774,11 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
 
   async interrupt() {
     this._aborted = true
+
+    // Resolve any pending ask_user request so the tool loop can unblock and exit
+    if (this._inputRequester && this._inputRequester.hasPendingRequest()) {
+      this._inputRequester.resolveReply('(Interrupted by user)')
+    }
 
     // Track whether we actually had an active request to abort
     let hadActiveRequest = false
