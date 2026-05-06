@@ -1663,12 +1663,15 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 
 /* ── Interactive Terminal Panel ── */
 .terminal-resize-handle {
-  height: 4px;
+  height: 6px;
   cursor: ns-resize;
   background: transparent;
   flex-shrink: 0;
   position: relative;
   z-index: 10;
+  /* Expand clickable area without visual change */
+  margin: -2px 0;
+  padding: 2px 0;
 }
 .terminal-resize-handle:hover,
 .terminal-resize-handle.dragging {

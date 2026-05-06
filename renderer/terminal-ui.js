@@ -263,6 +263,7 @@ function _initTerminalResize() {
   if (!handle) return
 
   let startY = 0, startHeight = 0
+  let rafId = null
 
   handle.addEventListener('mousedown', (e) => {
     e.preventDefault()
@@ -271,24 +272,35 @@ function _initTerminalResize() {
     startY = e.clientY
     startHeight = panel.offsetHeight
     handle.classList.add('dragging')
+    document.body.style.cursor = 'ns-resize'
+    document.body.style.userSelect = 'none'
     document.addEventListener('mousemove', onDrag)
     document.addEventListener('mouseup', onDragEnd)
   })
 
   function onDrag(e) {
+    e.preventDefault()
     const panel = _termPanel()
     if (!panel) return
     const delta = startY - e.clientY
     const newH = Math.max(80, Math.min(window.innerHeight * 0.8, startHeight + delta))
     panel.style.height = newH + 'px'
-    // Re-fit active xterm on drag
-    if (_activeShellId && _termActivePane === 'shell') _fitShell(_activeShellId)
+    // Throttle xterm fit to one per animation frame to avoid layout thrashing
+    if (!rafId && _activeShellId && _termActivePane === 'shell') {
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        _fitShell(_activeShellId)
+      })
+    }
   }
 
   function onDragEnd() {
     handle.classList.remove('dragging')
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
     document.removeEventListener('mousemove', onDrag)
     document.removeEventListener('mouseup', onDragEnd)
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null }
     // Final fit after drag ends
     if (_activeShellId && _termActivePane === 'shell') _fitShell(_activeShellId)
   }
