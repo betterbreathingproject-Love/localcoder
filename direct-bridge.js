@@ -3323,9 +3323,14 @@ class DirectBridge {
     // Starts at the configured baseline. Steps up on truncation (finish_reason
     // 'length'), decays back toward baseline on clean stops so we don't
     // permanently inflate KV cache allocation after a one-off large response.
-    this._adaptiveMaxTokens = config.MAX_OUTPUT_TOKENS
-    this._adaptiveMaxTokensFloor = config.MAX_OUTPUT_TOKENS   // baseline / floor
-    this._adaptiveMaxTokensCeil = 32768                        // hard ceiling
+    // When opts.maxTokensFloor is provided (e.g. for cascade-eligible roles
+    // like code-search/context-gather that rarely need long responses), the
+    // floor is lowered so per-turn generation is shorter and finishes faster.
+    const _ceil = opts.maxTokensCeil ?? 32768
+    const _floor = Math.min(opts.maxTokensFloor ?? config.MAX_OUTPUT_TOKENS, _ceil)
+    this._adaptiveMaxTokens = _floor
+    this._adaptiveMaxTokensFloor = _floor   // baseline / floor
+    this._adaptiveMaxTokensCeil = _ceil     // hard ceiling
     this._adaptiveCleanTurns = 0  // consecutive clean-stop turns since last bump
 
     // ── Performance: deferred LSP diagnostics ─────────────────────────────
@@ -5542,21 +5547,44 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
       }
 
       // ── Performance: parallel pre-fetch for read-only tools ─────────────
-      // When the model returns multiple read-only tool calls (read_file,
-      // search_files, list_dir, web_search), execute the actual I/O in
+      // When the model returns read-only tool calls (read_file, search_files,
+      // list_dir, web_search, ast_search, lsp_*), execute the actual I/O in
       // parallel before the sequential processing loop. Results are cached
       // in a Map and looked up during the normal loop, avoiding redundant I/O.
-      const PREFETCH_TOOLS = new Set(['read_file', 'read_files', 'search_files', 'list_dir', 'web_search', 'web_fetch'])
+      //
+      // Mixed turns (2 reads + 1 write) also win here — the reads are fired
+      // while the write still has to go through its own side-effect path
+      // (post-write cache, LSP deferred, etc.), so by the time the loop
+      // reaches the reads they're already resolved.
+      const PREFETCH_TOOLS = new Set([
+        'read_file', 'read_files', 'search_files', 'list_dir',
+        'web_search', 'web_fetch',
+        'ast_search', 'undo_list',
+        'lsp_get_document_symbols', 'lsp_get_hover', 'lsp_get_definition',
+        'lsp_get_references', 'lsp_get_type_definition',
+        'lsp_workspace_symbol', 'lsp_get_call_hierarchy',
+        'lsp_get_diagnostics',
+      ])
       const _prefetchResults = new Map()  // tc.id → Promise<result>
-      if (toolCalls.length > 1) {
+      // Prefetch whenever we have at least one eligible read in a multi-tool
+      // turn, OR a single read that can overlap with downstream per-tool
+      // housekeeping. No downside — the executeTool promise just sits in the
+      // map until the serial loop awaits it.
+      if (toolCalls.length >= 1) {
         const prefetchable = toolCalls.filter(tc => {
+          // Skip calls the earlier auto-coalescers already handled — those
+          // IDs now resolve via the _coalescedToolCallIds path in the loop.
+          if (this._coalescedToolCallIds?.has(tc.id)) return false
           try {
             const args = JSON.parse(tc.function.arguments)
             return PREFETCH_TOOLS.has(tc.function.name) && args
           } catch { return false }
         })
-        if (prefetchable.length > 1) {
-          this.send('qwen-event', { type: 'system', subtype: 'debug', data: `⚡ Parallel pre-fetch: ${prefetchable.length} read-only tools` })
+        // Only worth firing when there's more than one tool call in the turn
+        // (otherwise the serial loop runs the same executeTool directly with
+        // no extra overhead).
+        if (prefetchable.length >= 1 && toolCalls.length > 1) {
+          this.send('qwen-event', { type: 'system', subtype: 'debug', data: `⚡ Parallel pre-fetch: ${prefetchable.length} read-only tool(s) of ${toolCalls.length} total` })
           for (const tc of prefetchable) {
             let args
             try { args = JSON.parse(tc.function.arguments) } catch { continue }

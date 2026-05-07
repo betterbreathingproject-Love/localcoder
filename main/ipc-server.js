@@ -12,6 +12,30 @@ const config = require('../config')
 let _calibrationProfile = null
 let _calibrating = false
 
+// ── post-model-load hooks ─────────────────────────────────────────────────────
+// Callers register listeners via registerModelLoadHook(fn). Every successful
+// /admin/load (including post-crash auto-reload) fires every registered hook
+// asynchronously with { modelPath, modelId, reason }. Hooks are fire-and-forget
+// — a thrown or rejected promise does not abort other hooks or the load reply.
+const _modelLoadHooks = []
+
+function registerModelLoadHook(fn) {
+  if (typeof fn === 'function') _modelLoadHooks.push(fn)
+}
+
+function _fireModelLoadHooks(info) {
+  for (const fn of _modelLoadHooks) {
+    try {
+      const r = fn(info)
+      if (r && typeof r.catch === 'function') r.catch(err => {
+        console.warn(`[model-load-hook] ${fn.name || 'anonymous'} rejected: ${err.message}`)
+      })
+    } catch (err) {
+      console.warn(`[model-load-hook] ${fn.name || 'anonymous'} threw: ${err.message}`)
+    }
+  }
+}
+
 // ── calibration cache (persisted to disk, keyed by model ID) ─────────────────
 // Profiles are stored in ~/.qwencoder/calibration/<modelKey>.json
 // so calibration only runs once per model, not on every server restart.
@@ -245,6 +269,8 @@ async function _reloadModel(port, modelPath, mainWindow, appDir) {
 
       // Re-run calibration and reload fast model using user's saved preference
       runCalibration(`http://127.0.0.1:${port}`, port, mainWindow, modelPath)
+      // Fire post-load hooks so prefix cache + speculative decoding re-arm after crash
+      _fireModelLoadHooks({ modelPath, modelId: result.model_id || null, reason: 'crash-reload' })
       const config = require('../config')
       const memClient = require('../memory-client.js')
       const projects = require('../projects.js')
@@ -505,6 +531,9 @@ function register(ipcMain, { getServerUrl, getServerPort, getMainWindow, appDir 
       _lastLoadedModelPath = modelPath  // remember for post-crash reload
       runCalibration(serverUrl(), serverPort(), getMainWindow(), modelPath)
 
+      // Fire registered post-load hooks (prefix-cache warm-up, speculative, etc.)
+      _fireModelLoadHooks({ modelPath, modelId: result.model_id || null, reason: 'user-load' })
+
       // Auto-load the fast extraction model (fire-and-forget).
       // Use the user's saved fast model preference; fall back to DEFAULT_FAST_MODEL.
       // This enables all fast-assist features: todo bootstrap, error diagnosis,
@@ -711,4 +740,4 @@ function register(ipcMain, { getServerUrl, getServerPort, getMainWindow, appDir 
   })
 }
 
-module.exports = { register, startServer, stopServer, restartServer, waitForServer, killStaleServer, findPython, runCalibration, getCalibrationProfile, setCalibrationProfile, isCalibrating, clearCalibration, setLastLoadedModel }
+module.exports = { register, startServer, stopServer, restartServer, waitForServer, killStaleServer, findPython, runCalibration, getCalibrationProfile, setCalibrationProfile, isCalibrating, clearCalibration, setLastLoadedModel, registerModelLoadHook }

@@ -5,6 +5,7 @@ const fs = require('node:fs')
 const { DirectBridge, WindowSink, WindowInputRequester, sinkBus } = require('./direct-bridge')
 const { AgentPool, CATEGORY_KEYWORDS } = require('./agent-pool')
 const { loadSteeringDocs, formatSteeringForPrompt } = require('./steering-loader')
+const config = require('./config')
 let systemPromptCache = null
 try { systemPromptCache = require('./system-prompt-cache') } catch (_) { /* optional */ }
 
@@ -166,10 +167,47 @@ ${taskList}
 
 const { SAFE_EDIT_INSTRUCTIONS } = require('./orchestrator');
 
+// ── Cascade router tiers ──────────────────────────────────────────────────────
+// Tier 0 (fast): short-budget dispatches for routing/classification/simple
+//                lookups. Uses a reduced max_tokens floor so the model commits
+//                to a tool call faster instead of narrating.
+// Tier 1 (mid):  currently unused — primary model with moderate budget.
+// Tier 2 (primary): full MAX_OUTPUT_TOKENS. Always available as the fallback.
+//
+// Note: while the local MLX server exposes only one streaming model at a time,
+// the router still gives us: (a) per-role token-budget shaping for
+// cascade-eligible roles, (b) stats for identifying cheap turns that could
+// later be rerouted when a dual-streaming server is available.
+const CASCADE_TIERS = {
+  0: { model: config.DEFAULT_FAST_MODEL || null, budget: 4096 },
+  1: { model: config.DEFAULT_PRIMARY_MODEL || null, budget: 16384 },
+  2: { model: config.DEFAULT_PRIMARY_MODEL || null, budget: config.CONTEXT_WINDOW },
+}
+
+// Per-role baseline max_tokens. Cascade-eligible roles get a much smaller
+// floor since they usually emit a tool_call + short rationale. Writing-heavy
+// roles keep the full MAX_OUTPUT_TOKENS floor so long file contents don't
+// get truncated.
+const ROLE_MAX_TOKENS_FLOOR = {
+  'code-search': 1024,
+  'context-gather': 1024,
+  'explore': 2048,
+  'requirements': 4096,
+  'design': 4096,
+  'debug': config.MAX_OUTPUT_TOKENS,
+  'tester': config.MAX_OUTPUT_TOKENS,
+  'implementation': config.MAX_OUTPUT_TOKENS,
+  'general': config.MAX_OUTPUT_TOKENS,
+}
+
 const agentPool = new AgentPool({
   maxConcurrency: 1,
   getCalibrationProfile: ipcServer.getCalibrationProfile,
   safeEditInstructions: SAFE_EDIT_INSTRUCTIONS,
+  // Cascade router — surfaces tier policy + stats. The agent factory below
+  // consults it for the per-role start tier and uses the matching budget as
+  // the bridge's max_tokens floor.
+  cascade: { tiers: CASCADE_TIERS },
   agentFactory: (task, agentType, context) => {
     const typeName = agentType?.name || 'general'
     const cwd = task.cwd || currentProject || process.cwd()
@@ -193,6 +231,10 @@ const agentPool = new AgentPool({
       lspManager,
       getCalibrationProfile: ipcServer.getCalibrationProfile,
       inputRequester: qwenBridge?._inputRequester || null,
+      // Cascade-eligible roles start with a smaller max_tokens floor so the
+      // model commits to a tool_call faster. The floor can still be raised
+      // by the adaptive logic when a truncation is detected.
+      maxTokensFloor: ROLE_MAX_TOKENS_FLOOR[typeName] ?? config.MAX_OUTPUT_TOKENS,
       routeTask: async (title) => {
         const kwType = agentPool.selectType({ title, description: '' })
         const kwName = kwType?.name || 'general'
@@ -229,6 +271,16 @@ const agentPool = new AgentPool({
     return {
       run: async ({ prompt }) => {
         console.log('[agent-factory] Running', typeName, 'task:', task.id, 'at', Date.now())
+        // Record the dispatch against the cascade router so stats reflect
+        // what actually ran. Without model-swap on the server this is always
+        // the primary tier — the stats are still useful for budget tuning.
+        try {
+          const router = agentPool.getCascadeRouter?.()
+          if (router) {
+            const tier = router.startTier(typeName)
+            router.recordCommit(tier)
+          }
+        } catch { /* non-fatal */ }
         // Build the task prompt — keep it focused on just this task
         // Spec context is trimmed to avoid overwhelming the model
         let taskPrompt = `Task: ${prompt}`
@@ -346,6 +398,148 @@ ipcWatcher.register(ipcMain, ctx)
 ipcLsp.register(ipcMain, ctx)
 ipcCalibration.register(ipcMain, { getCalibrationProfile: ipcServer.getCalibrationProfile, setCalibrationProfile: ipcServer.setCalibrationProfile, isCalibrating: ipcServer.isCalibrating })
 ipcTerminal.register(ipcMain, ctx)
+
+// ── Post-model-load: warm the server's prefix cache ────────────────────────
+// The stable core system prompt (role preamble + tool rules + workflow) is
+// byte-identical across all turns for a given agent role. The server's
+// prefix cache in server.py (/admin/prefix-cache) accelerates TTFT 1.8-3.1×
+// on a cache hit. Build it once per model load for the most common role so
+// the first real request pays a full prefill only once.
+ipcServer.registerModelLoadHook(async ({ modelPath, reason }) => {
+  try {
+    // Wait briefly so calibration and fast-model load don't contend on the
+    // Metal lock with prefix-cache build. Both need the primary GPU.
+    await new Promise(r => setTimeout(r, 2500))
+
+    const http = require('http')
+    // Build the canonical stable prompt for role=general. This must match
+    // byte-for-byte what direct-bridge produces as messages[0].content so
+    // the server's get_system_prompt() comparison hits. We spin up a
+    // throwaway bridge to avoid duplicating the builder logic.
+    const tmpDir = require('os').tmpdir()
+    const tmpSink = { send: () => {} }
+    const tmpBridge = new DirectBridge(tmpSink, { agentRole: 'general' })
+    const stablePrompt = systemPromptCache
+      ? systemPromptCache.getCachedSystemPrompt(
+          'general', tmpDir, 'auto-edit',
+          () => tmpBridge._buildSystemPrompt(tmpDir, 'auto-edit')
+        )
+      : tmpBridge._buildSystemPrompt(tmpDir, 'auto-edit')
+
+    const body = JSON.stringify({ enabled: true, system_prompt: stablePrompt, rebuild: reason === 'crash-reload' })
+    await new Promise((resolve) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: SERVER_PORT, path: '/admin/prefix-cache', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        let d = ''; res.on('data', (c) => d += c)
+        res.on('end', () => {
+          try {
+            const r = JSON.parse(d)
+            const tokens = r?.prefix_cache_tokens || 0
+            if (tokens > 0) {
+              console.log(`[prefix-cache] Warm-up built ${tokens} tokens for ${modelPath.split('/').pop()}`)
+              mainWindow?.webContents.send('server-log', `⚡ Prefix cache warm-up: ${tokens} tokens`)
+            } else {
+              console.log(`[prefix-cache] Warm-up reply (no token count): ${d.slice(0, 200)}`)
+            }
+          } catch { /* non-fatal */ }
+          resolve()
+        })
+        res.on('error', () => resolve())
+      })
+      req.on('error', (err) => {
+        console.warn(`[prefix-cache] Warm-up request failed: ${err.message}`)
+        resolve()
+      })
+      req.setTimeout(60000, () => { req.destroy(); resolve() })
+      req.write(body); req.end()
+    })
+  } catch (err) {
+    console.warn(`[prefix-cache] Warm-up error (non-fatal): ${err.message}`)
+  }
+})
+
+// ── Post-model-load: enable speculative decoding ──────────────────────────
+// With the primary model loaded as text-only (mlx_lm) and the fast 0.8B
+// already loaded for extraction, we can use the 0.8B as a draft model.
+// The server verifies every draft token against the target, so wrong guesses
+// are discarded with no quality loss. Typical speedup: 1.5–2.5×.
+//
+// Opt-out via app settings { speculativeDecodingEnabled: false }. The hook
+// waits for the fast model to actually be loaded (the extractor-load call in
+// ipc-server.js is fire-and-forget, so we poll status briefly before enabling).
+ipcServer.registerModelLoadHook(async ({ modelPath, reason }) => {
+  try {
+    const projects = require('./projects')
+    const appSettings = projects.getAppSettings ? projects.getAppSettings() : {}
+    if (appSettings.speculativeDecodingEnabled === false) {
+      console.log('[speculative] Disabled by app settings — skipping auto-enable')
+      return
+    }
+
+    // Both models need to share the same tokenizer family. The default pair
+    // (Qwen3.6-35B primary + Qwen3.5-0.8B draft) works because both load
+    // the same Qwen3 tokenizer via mlx_lm. Users can override the draft via
+    // `lastFastModelPath`.
+    const draftModelPath = appSettings.lastFastModelPath || config.DEFAULT_FAST_MODEL
+    if (!draftModelPath) {
+      console.log('[speculative] No draft model configured — skipping')
+      return
+    }
+
+    // Extra delay so the prefix-cache build (above) finishes first — both
+    // hold the Metal lock and draft-model load adds ~3-5s on top of what's
+    // already serialized at startup.
+    await new Promise(r => setTimeout(r, 6000))
+
+    const http = require('http')
+    const body = JSON.stringify({
+      enabled: true,
+      draft_model_path: draftModelPath,
+      num_draft_tokens: appSettings.speculativeNumDraftTokens || 4,
+    })
+
+    await new Promise((resolve) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: SERVER_PORT, path: '/admin/speculative', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        let d = ''; res.on('data', (c) => d += c)
+        res.on('end', () => {
+          if (res.statusCode >= 400) {
+            // Common failure modes: vision model loaded as primary, tokenizer
+            // mismatch, OOM on draft load. Log and move on — the agent still
+            // works without speculation.
+            let msg = `HTTP ${res.statusCode}`
+            try { msg = JSON.parse(d).detail || msg } catch {}
+            console.warn(`[speculative] Auto-enable failed: ${msg}`)
+            mainWindow?.webContents.send('server-log', `⚠️ Speculative decoding unavailable: ${msg}`)
+            return resolve()
+          }
+          try {
+            const r = JSON.parse(d)
+            if (r.speculative_enabled) {
+              console.log(`[speculative] Enabled with draft=${r.draft_model?.split('/').pop()}, num=${r.num_draft_tokens}`)
+              mainWindow?.webContents.send('server-log', `⚡ Speculative decoding on (${r.num_draft_tokens} tokens, draft=${r.draft_model?.split('/').pop()})`)
+            }
+          } catch { /* non-fatal */ }
+          resolve()
+        })
+        res.on('error', () => resolve())
+      })
+      req.on('error', (err) => {
+        console.warn(`[speculative] Request failed: ${err.message}`)
+        resolve()
+      })
+      // Draft-model load can take up to ~90s on cold disk
+      req.setTimeout(90000, () => { req.destroy(); resolve() })
+      req.write(body); req.end()
+    })
+  } catch (err) {
+    console.warn(`[speculative] Auto-enable error (non-fatal): ${err.message}`)
+  }
+})
 
 // ── Setup: launch main window from setup wizard ───────────────────────────────
 ipcMain.handle('setup-launch-main', async () => {
@@ -666,6 +860,12 @@ Reply with ONLY the JSON object, no other text.`
 // ── background task events ────────────────────────────────────────────────────
 agentPool.on('bg-task-event', (evt) => {
   mainWindow?.webContents.send('bg-task-event', evt)
+})
+// Cascade router escalations — surface tier transitions to the renderer for
+// observability and to the debug console. Non-fatal if nothing is listening.
+agentPool.on('cascade-escalate', (info) => {
+  console.log(`[cascade] escalate ${info.from}→${info.to} reason=${info.reason}`)
+  mainWindow?.webContents.send('cascade-escalate', info)
 })
 // ── Setup wizard window ───────────────────────────────────────────────────────
 function createSetupWindow() {
