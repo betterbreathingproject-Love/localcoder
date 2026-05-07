@@ -22,6 +22,12 @@ const { getApiKeys } = require('./projects')
 const compactor = require('./compactor')
 const config = require('./config')
 
+// ── Tool-loop enhancements (innovative add-ons, degrade gracefully) ──────────
+let ToolSpeculator = null
+try { ({ ToolSpeculator } = require('./tool-speculator')) } catch (_) { /* optional */ }
+let constrainedDecoder = null
+try { constrainedDecoder = require('./constrained-decoder') } catch (_) { /* optional */ }
+
 // ── Shared event bus for cross-module event observation ──────────────────────
 // WindowSink sends events to the renderer via IPC, but other main-process
 // modules (Telegram bot, mini app server) also need to observe these events.
@@ -5428,7 +5434,31 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
 
         let fnArgs = {}
-        try { fnArgs = JSON.parse(tc.function.arguments) } catch (parseErr) {
+        // ── Enhanced repair: try constrained-decoder first ────────────────
+        // Handles key renames (args→arguments, tool→name), markdown fences,
+        // single quotes, trailing commas, type coercion, and schema validation.
+        // Falls through to existing logic if this fails.
+        if (constrainedDecoder) {
+          try {
+            const toolDefs = getToolDefs(this._lspManager, this._agentRole, null)
+            const repair = constrainedDecoder.repairAndValidate(
+              { function: { name: fnName, arguments: tc.function.arguments } },
+              toolDefs
+            )
+            if (repair.valid) {
+              const parsed = JSON.parse(repair.repaired.function.arguments)
+              if (repair.issues.length > 0) {
+                this.send('qwen-event', { type: 'system', subtype: 'debug',
+                  data: `constrained-decoder repaired ${fnName}: ${repair.issues.join(', ')}` })
+              }
+              fnArgs = parsed
+              // Skip downstream parse — we have valid args already
+              tc.function.arguments = repair.repaired.function.arguments
+            }
+          } catch (_) { /* fall through to existing logic */ }
+        }
+        // ── Existing JSON parse + repair chain (unchanged) ─────────────────
+        if (Object.keys(fnArgs).length === 0) try { fnArgs = JSON.parse(tc.function.arguments) } catch (parseErr) {
           const raw = tc.function.arguments || ''
 
           // Strategy 1: For write_file, extract path and content directly from raw string

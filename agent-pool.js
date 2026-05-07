@@ -10,6 +10,12 @@ try {
   memoryClient = require('./memory-client.js')
 } catch (_) {}
 
+// Cascade router — optional; enables tier escalation when provided
+let CascadeRouter = null
+try {
+  ({ CascadeRouter } = require('./cascade-router.js'))
+} catch (_) { /* cascade routing disabled */ }
+
 // --- Constants ---
 
 const DEFAULT_MAX_CONCURRENCY = 3;
@@ -52,6 +58,19 @@ class AgentPool extends EventEmitter {
     this._getCalibrationProfile = options.getCalibrationProfile || null;
     this._safeEditInstructions = options.safeEditInstructions || null;
 
+    // ── Cascade router (opt-in) ─────────────────────────────────────────
+    // When enabled, dispatches to fast/mid models first and escalates to
+    // primary only when needed. Pass { cascade: { tiers: {...} } } to enable.
+    this._cascadeRouter = null;
+    if (options.cascade && CascadeRouter) {
+      this._cascadeRouter = new CascadeRouter({
+        tiers: options.cascade.tiers || {},
+        policy: options.cascade.policy,
+        confidenceThreshold: options.cascade.confidenceThreshold,
+        onEscalate: (info) => this.emit('cascade-escalate', info),
+      });
+    }
+
     // Subagent type registry: Map<name, SubagentType>
     this._types = new Map();
 
@@ -91,6 +110,20 @@ class AgentPool extends EventEmitter {
    */
   setLspStatusGetter(fn) {
     this._getLspStatus = typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * Get cascade router stats, or null if cascading is disabled.
+   */
+  getCascadeStats() {
+    return this._cascadeRouter ? this._cascadeRouter.stats() : null;
+  }
+
+  /**
+   * Get the cascade router instance (for agent factories that want to honor it).
+   */
+  getCascadeRouter() {
+    return this._cascadeRouter;
   }
 
   /**
