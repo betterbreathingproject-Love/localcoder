@@ -1560,6 +1560,57 @@ async def admin_prefix_cache_status():
     }
 
 
+@app.get("/admin/session-cache")
+async def admin_session_cache_status():
+    """Return session-level KV cache statistics (turn-to-turn prefix reuse)."""
+    if _session_kv_cache is None:
+        return {"enabled": False, "reason": "module not loaded"}
+    return {"enabled": True, **_session_kv_cache.stats()}
+
+
+@app.post("/admin/session-cache/invalidate")
+async def admin_session_cache_invalidate():
+    """Force clear the session KV cache (e.g. after model changes)."""
+    if _session_kv_cache is None:
+        return {"status": "noop", "reason": "module not loaded"}
+    _session_kv_cache.invalidate()
+    return {"status": "invalidated"}
+
+
+@app.get("/admin/session-cache/diagnose")
+async def admin_session_cache_diagnose():
+    """Diagnose why the session cache isn't hitting."""
+    if _model is None:
+        return {"error": "no model loaded"}
+    if _session_kv_cache is None:
+        return {"error": "module not loaded"}
+
+    import importlib
+    cache_mod = importlib.import_module("mlx_lm.models.cache")
+
+    try:
+        fresh_cache = cache_mod.make_prompt_cache(_model)
+        can_trim = cache_mod.can_trim_prompt_cache(fresh_cache)
+        layer_types = []
+        for i, c in enumerate(fresh_cache):
+            layer_types.append({
+                "idx": i,
+                "type": type(c).__name__,
+                "is_trimmable": hasattr(c, 'is_trimmable') and c.is_trimmable() if hasattr(c, 'is_trimmable') else False,
+            })
+        return {
+            "model_id": _model_id,
+            "num_layers": len(fresh_cache),
+            "can_trim_overall": can_trim,
+            "first_5_layers": layer_types[:5],
+            "all_trimmable": all(l["is_trimmable"] for l in layer_types),
+            "trimmable_count": sum(1 for l in layer_types if l["is_trimmable"]),
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
 # ── benchmark ─────────────────────────────────────────────────────────────────
 BENCHMARK_PROMPT = (
     "You are a helpful coding assistant. Explain step by step how to implement "
@@ -2036,7 +2087,10 @@ async def chat_completions(req: ChatRequest):
         # ── Ensure a cache exists so we can save it for next turn ──────────
         # If neither session nor disk prefix caches produced one, create a
         # fresh cache. This lets us save it AFTER generation for reuse next turn.
-        if not _model_is_vision and _session_kv_cache is not None and 'prompt_cache' not in kwargs:
+        # Skip if the architecture is known to be non-trimmable (hybrid models).
+        _sess_stats = _session_kv_cache.stats() if _session_kv_cache else None
+        _arch_supports_trim = _sess_stats is None or not _sess_stats.get('arch_checked') or _sess_stats.get('arch_trimmable')
+        if not _model_is_vision and _session_kv_cache is not None and 'prompt_cache' not in kwargs and _arch_supports_trim:
             try:
                 from mlx_lm.models.cache import make_prompt_cache as _mkpc
                 _fresh_cache = _mkpc(_model)

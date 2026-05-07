@@ -91,6 +91,11 @@ class SessionKVCache:
         self._misses = 0
         self._full_prefills = 0
         self._last_hit_ratio = 0.0
+        # Architecture support — detected on first save(). Hybrid models
+        # (Qwen3.6-A3B with mixed linear/full attention) have non-trimmable
+        # caches and cannot participate in turn-to-turn prefix reuse.
+        self._arch_checked = False
+        self._arch_trimmable = True  # optimistic default until proven otherwise
 
     def try_match(self, tokens: list[int], model_id: str = "") -> Optional[dict]:
         """
@@ -103,6 +108,8 @@ class SessionKVCache:
         Or None if no reusable match.
         """
         if not _MLX_CACHE_AVAILABLE or self._cached_state is None:
+            if self._cached_state is None:
+                print(f"[session-kv-cache] miss: no cached state yet", file=sys.stderr)
             self._misses += 1
             return None
 
@@ -116,6 +123,9 @@ class SessionKVCache:
 
         # Find longest matching prefix (token-exact)
         match_len = _longest_common_prefix_length(tokens, self._cached_tokens)
+        print(f"[session-kv-cache] prefix match: {match_len}/{len(tokens)} tokens "
+              f"(cached: {len(self._cached_tokens)} tokens, min_match: {self._min_match})",
+              file=sys.stderr)
 
         if match_len < self._min_match:
             self._misses += 1
@@ -125,10 +135,12 @@ class SessionKVCache:
         # (can't trim all cache types, e.g. some hybrid model caches)
         try:
             trimmable = can_trim_prompt_cache(self._cached_state)
+            print(f"[session-kv-cache] can_trim={trimmable}", file=sys.stderr)
         except Exception as e:
             print(f"[session-kv-cache] can_trim check failed: {e}", file=sys.stderr)
             trimmable = False
         if not trimmable:
+            print(f"[session-kv-cache] miss: cache not trimmable (hybrid model?)", file=sys.stderr)
             self._misses += 1
             return None
 
@@ -176,6 +188,34 @@ class SessionKVCache:
         """
         if not _MLX_CACHE_AVAILABLE:
             return
+        # Check architecture support on first save — many hybrid models
+        # (e.g. Qwen3.6-A3B, Qwen3.6-27B with linear/full mixed attention)
+        # have non-trimmable caches. Save is pointless in that case.
+        if not self._arch_checked and final_state is not None:
+            self._arch_checked = True
+            try:
+                trimmable = can_trim_prompt_cache(final_state)
+                self._arch_trimmable = trimmable
+                if not trimmable:
+                    layer_info = []
+                    for i, c in enumerate(final_state[:5]):
+                        tname = type(c).__name__
+                        layer_info.append(f"L{i}={tname}")
+                    print(f"[session-kv-cache] ⚠️  Hybrid model detected — cache is NOT "
+                          f"trimmable (layers: {', '.join(layer_info)}...). "
+                          f"Turn-to-turn prefix reuse disabled. Per-layer trim support "
+                          f"would require custom kernels. Other optimizations (post-write "
+                          f"cache, tool speculator, cascade router) still active.",
+                          file=sys.stderr)
+                else:
+                    print(f"[session-kv-cache] ✓ Model supports cache trimming — "
+                          f"turn-to-turn prefix reuse active", file=sys.stderr)
+            except Exception as e:
+                print(f"[session-kv-cache] arch check error: {e}", file=sys.stderr)
+                self._arch_trimmable = False
+        # Only save if architecture supports it
+        if not self._arch_trimmable:
+            return
         self._cached_tokens = list(final_tokens)
         self._cached_state = final_state
         self._model_id = model_id
@@ -202,6 +242,8 @@ class SessionKVCache:
             "cached_tokens": len(self._cached_tokens),
             "last_reuse_ratio": self._last_hit_ratio,
             "model_id": self._model_id,
+            "arch_trimmable": self._arch_trimmable,
+            "arch_checked": self._arch_checked,
         }
 
 
