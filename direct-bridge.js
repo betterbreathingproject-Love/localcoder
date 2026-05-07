@@ -31,6 +31,8 @@ let PostWriteCache = null
 try { ({ PostWriteCache } = require('./post-write-cache')) } catch (_) { /* optional */ }
 let shrinkOlderToolResults = null
 try { ({ shrinkOlderToolResults } = require('./tool-result-shrinker')) } catch (_) { /* optional */ }
+let ToolFilter = null
+try { ({ ToolFilter } = require('./tool-filter')) } catch (_) { /* optional */ }
 let systemPromptCache = null
 try { systemPromptCache = require('./system-prompt-cache') } catch (_) { /* optional */ }
 
@@ -3357,6 +3359,14 @@ class DirectBridge {
     // Disable via opts.postWriteCache = false.
     this._postWriteCache = (opts.postWriteCache !== false && PostWriteCache)
       ? new PostWriteCache({ maxEntries: 50, ttlTurns: 10 })
+      : null
+
+    // ── Tool filter (semantic pre-filtering) ──────────────────────────────
+    // Reduces 28-tool baseline (~7.4K tokens) down to ~12 most relevant tools
+    // per request. Zero new deps — uses existing memory-bridge /memory/embed.
+    // Disable via opts.filterTools = false.
+    this._toolFilter = (opts.filterTools !== false && ToolFilter)
+      ? new ToolFilter({ topK: 12, minScore: 0.1, persistCache: true })
       : null
   }
 
@@ -7418,10 +7428,39 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         this._cachedToolDefsKey = toolDefsKey
       }
 
+      // ── Semantic tool filtering (reduce ~7.4K tokens of tool schemas) ────
+      // Embed the current prompt + recent context, score tools by relevance,
+      // keep only the top-K + always-include set. Degrades gracefully if the
+      // embed endpoint is down — returns the full tool list.
+      let effectiveToolDefs = this._cachedToolDefs
+      if (this._toolFilter && Array.isArray(this._cachedToolDefs) && this._cachedToolDefs.length > 12) {
+        try {
+          // Build a context string from the last user message and recent tool
+          // results (short excerpts). This is what we embed to score tools.
+          const lastUser = [...messages].reverse().find(m => m.role === 'user')?.content || ''
+          const recentTool = [...messages].reverse().slice(0, 4)
+            .filter(m => m.role === 'tool' && typeof m.content === 'string')
+            .map(m => m.content.slice(0, 200))
+            .join('\n')
+          const contextText = [lastUser.slice(0, 500), recentTool].filter(Boolean).join('\n').slice(0, 1000)
+
+          const filterResult = await this._toolFilter.filter(this._cachedToolDefs, contextText)
+          effectiveToolDefs = filterResult.tools
+          if (!filterResult.metrics?.fallback && filterResult.metrics?.tokensSaved > 0) {
+            this.send('qwen-event', { type: 'system', subtype: 'debug',
+              data: `⚡ tool-filter: ${filterResult.metrics.original} → ${filterResult.metrics.kept} tools (saved ~${filterResult.metrics.tokensSaved} tokens, ${filterResult.metrics.elapsedMs}ms)` })
+          }
+        } catch (e) {
+          this.send('qwen-event', { type: 'system', subtype: 'debug',
+            data: `tool-filter error (using full list): ${e.message}` })
+          effectiveToolDefs = this._cachedToolDefs
+        }
+      }
+
       const body = {
         model: model || 'default',
         messages,
-        tools: this._cachedToolDefs,
+        tools: effectiveToolDefs,
         stream: true,
         max_tokens: this._adaptiveMaxTokens,
       }
