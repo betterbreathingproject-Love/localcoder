@@ -6564,13 +6564,50 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
 
         // ── Auto-snapshot after build_run_sim ─────────────────────────────────
-        // After successfully launching the app on the simulator, automatically
-        // capture the UI hierarchy so the agent can see what's on screen without
-        // needing to call snapshot_ui separately.
+        // After successfully launching the app on the simulator:
+        //   1. Open Simulator.app so the window is actually visible on screen
+        //      (simctl boot is headless — the agent otherwise can't see the UI).
+        //   2. Capture a screenshot and push it to the renderer's preview panel.
+        //   3. Capture the full UI view hierarchy (coordinates) for the agent.
         if (fnName === 'xcode_build_run_simulator' && !isError && xcodeTool && xcodeTool.isXcodeMCPAvailable()) {
           try {
-            // Small delay to let the app finish launching
+            // 1. Open the Simulator window — idempotent, cheap, ~instant.
+            xcodeTool.openSimulatorWindow()
+            this.send('qwen-event', { type: 'system', subtype: 'debug', data: '🖥 Opened Simulator.app window' })
+
+            // Small delay to let the app finish launching before grabbing UI/screenshot.
             await new Promise(r => setTimeout(r, 2000))
+
+            // 2. Screenshot → renderer preview panel.
+            try {
+              const os = require('os')
+              const path = require('path')
+              const fs = require('fs')
+              const shotPath = path.join(os.tmpdir(), `qc-sim-${Date.now()}.png`)
+              const shot = await xcodeTool.executeXcodeTool(
+                'xcode_screenshot_simulator',
+                { output_path: shotPath },
+                cwd,
+              )
+              // Prefer the path we asked for; fall back to scanning the MCP response for a png path.
+              let resolvedPath = fs.existsSync(shotPath) ? shotPath : null
+              if (!resolvedPath && shot.result) {
+                const m = shot.result.match(/(\/\S+?\.png)/)
+                if (m && fs.existsSync(m[1])) resolvedPath = m[1]
+              }
+              if (resolvedPath) {
+                const b64 = fs.readFileSync(resolvedPath).toString('base64')
+                this.send('qwen-event', {
+                  type: 'simulator-preview',
+                  dataUrl: `data:image/png;base64,${b64}`,
+                  path: resolvedPath,
+                  at: Date.now(),
+                })
+                this.send('qwen-event', { type: 'system', subtype: 'debug', data: '📸 Simulator screenshot → preview panel' })
+              }
+            } catch { /* non-fatal */ }
+
+            // 3. Structured UI hierarchy for the agent.
             const snap = await xcodeTool.executeXcodeTool('xcode_snapshot_ui', {}, cwd)
             if (snap.result && snap.result.length > 10) {
               content = `${content}\n\n📱 UI snapshot after launch:\n${snap.result.slice(0, 3000)}`

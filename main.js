@@ -92,7 +92,7 @@ const ROLE_OVERLAYS = {
     '\n' +
     'For iOS apps:\n' +
     '1. xcode_setup_project() — configures simulator automatically\n' +
-    '2. xcode_build_run_simulator() — build + install + launch, auto-captures UI snapshot\n' +
+    '2. xcode_build_run_simulator() — build + install + launch. Auto-opens the Simulator.app window, pushes a screenshot to the preview panel, and captures the UI hierarchy.\n' +
     '3. xcode_snapshot_ui() — full view hierarchy with coordinates\n' +
     '4. xcode_test() — XCTest results\n' +
     '5. xcode_get_coverage_report() + xcode_get_file_coverage() for coverage\n' +
@@ -266,7 +266,7 @@ agentPool.registerType({ name: 'debug', systemPrompt: '', allowedTools: [
   'xcode_setup_project', 'xcode_discover_projects', 'xcode_set_defaults', 'xcode_show_defaults',
   'xcode_build_simulator', 'xcode_get_build_settings',
   'xcode_start_log_capture', 'xcode_stop_log_capture',
-  'xcode_snapshot_ui', 'xcode_screenshot_simulator',
+  'xcode_snapshot_ui', 'xcode_screenshot_simulator', 'xcode_open_simulator_window',
 ] })
 agentPool.registerType({ name: 'tester', systemPrompt: '', allowedTools: [
   // Browser (web testing)
@@ -277,7 +277,7 @@ agentPool.registerType({ name: 'tester', systemPrompt: '', allowedTools: [
   'bash', 'read_file', 'read_files', 'list_dir', 'search_files',
   // Xcode / iOS / Swift testing
   'xcode_setup_project', 'xcode_discover_projects', 'xcode_set_defaults', 'xcode_show_defaults',
-  'xcode_list_schemes', 'xcode_list_simulators', 'xcode_boot_simulator',
+  'xcode_list_schemes', 'xcode_list_simulators', 'xcode_boot_simulator', 'xcode_open_simulator_window',
   'xcode_build_simulator', 'xcode_build_run_simulator', 'xcode_test', 'xcode_clean',
   'xcode_get_build_settings', 'xcode_snapshot_ui', 'xcode_screenshot_simulator',
   'xcode_start_log_capture', 'xcode_stop_log_capture',
@@ -288,13 +288,15 @@ agentPool.registerType({ name: 'implementation', systemPrompt: '', allowedTools:
   'read_file', 'read_files', 'write_file', 'edit_file', 'edit_files', 'list_dir', 'bash', 'search_files', 'web_search', 'web_fetch',
   // Xcode / Swift — build-validate loop after writing Swift code
   'xcode_setup_project', 'xcode_discover_projects', 'xcode_set_defaults', 'xcode_show_defaults',
-  'xcode_build_simulator', 'xcode_get_build_settings', 'xcode_clean',
-  'xcode_list_schemes', 'xcode_list_simulators',
+  'xcode_build_simulator', 'xcode_build_run_simulator', 'xcode_get_build_settings', 'xcode_clean',
+  'xcode_list_schemes', 'xcode_list_simulators', 'xcode_open_simulator_window',
+  'xcode_snapshot_ui', 'xcode_screenshot_simulator',
 ], timeout: 1800000 }) // 30 min
 agentPool.registerType({ name: 'general', systemPrompt: '', allowedTools: [
   'read_file', 'read_files', 'write_file', 'edit_file', 'edit_files', 'list_dir', 'bash', 'search_files', 'web_search', 'web_fetch',
   // Xcode / Swift — general tasks may involve Swift projects
-  'xcode_setup_project', 'xcode_discover_projects', 'xcode_build_simulator', 'xcode_get_build_settings',
+  'xcode_setup_project', 'xcode_discover_projects', 'xcode_build_simulator', 'xcode_build_run_simulator',
+  'xcode_get_build_settings', 'xcode_open_simulator_window', 'xcode_snapshot_ui', 'xcode_screenshot_simulator',
 ], timeout: 1800000 }) // 30 min
 
 // ── shared accessors for IPC modules ──────────────────────────────────────────

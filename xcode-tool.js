@@ -165,6 +165,14 @@ const XCODE_TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'xcode_open_simulator_window',
+      description: 'Open the Simulator.app window so the booted iOS simulator is visible on screen (and inside the QwenCoder preview panel). Booting a simulator with simctl alone is headless — this brings up the actual window. Called automatically after xcode_build_run_simulator, but you can also call it manually.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'xcode_get_build_settings',
       description: 'Get Xcode build settings for the current session (PRODUCT_BUNDLE_IDENTIFIER, SWIFT_VERSION, DEPLOYMENT_TARGET, etc.).',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -326,6 +334,7 @@ const XCODE_TOOL_DEFS = [
 // Map our tool names to XcodeBuildMCP tool names (v2.3.2 snake_case names)
 const TOOL_NAME_MAP = {
   xcode_setup_project:         null,  // handled locally in executeXcodeTool
+  xcode_open_simulator_window: null,  // handled locally in executeXcodeTool
   xcode_set_defaults:          'session_set_defaults',
   xcode_show_defaults:         'session_show_defaults',
   xcode_discover_projects:     'discover_projs',
@@ -645,6 +654,14 @@ async function executeXcodeTool(toolName, args, cwd) {
   // xcode_setup_project is handled locally — no MCP call needed
   if (toolName === 'xcode_setup_project') {
     const result = await setupXcodeProject(cwd || process.cwd())
+    return result.ok
+      ? { result: result.message }
+      : { error: result.message }
+  }
+
+  // xcode_open_simulator_window is handled locally — brings Simulator.app to the front
+  if (toolName === 'xcode_open_simulator_window') {
+    const result = openSimulatorWindow()
     return result.ok
       ? { result: result.message }
       : { error: result.message }
@@ -990,6 +1007,21 @@ async function setupXcodeProject(cwd) {
 }
 
 /**
+ * Open the Simulator.app window so the booted sim is visible.
+ * `simctl boot` alone is headless — you need `open -a Simulator` to show the window.
+ * Idempotent: safe to call even if Simulator is already running.
+ */
+function openSimulatorWindow() {
+  const { execSync } = require('child_process')
+  try {
+    execSync('open -a Simulator', { timeout: 5000 })
+    return { ok: true, message: '✅ Simulator.app window opened (or already visible).' }
+  } catch (err) {
+    return { ok: false, message: `Failed to open Simulator.app: ${err.message}` }
+  }
+}
+
+/**
  * Gracefully stop the MCP server subprocess on app exit.
  */
 function shutdown() {
@@ -1007,4 +1039,5 @@ module.exports = {
   shutdown,
   setupXcodeProject,
   ensureXcodePath,
+  openSimulatorWindow,
 }

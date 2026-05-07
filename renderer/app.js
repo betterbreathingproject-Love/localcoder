@@ -1852,6 +1852,11 @@ async function sendAgentMode(prompt, opts = {}) {
     if (typeof terminalHandleAgentEvent === 'function') terminalHandleAgentEvent(ev)
     if (agentFinished && ev.type !== 'session-end') return
     switch(ev.type) {
+      case 'simulator-preview':
+        if (typeof showSimulatorPreview === 'function' && ev.dataUrl) {
+          showSimulatorPreview(ev.dataUrl)
+        }
+        break
       case 'agent-type':
         if (ev.agentType && ev.agentType !== 'general') {
           _currentAgentType = ev.agentType
@@ -8362,6 +8367,27 @@ async function autoUpdateCenterPreview() {
       refreshCenterPreview()
     }
   } catch (_) {}
+}
+
+// ── iOS Simulator screenshot preview ─────────────────────────────────────────
+// Called by the 'simulator-preview' qwen-event after xcode_build_run_simulator.
+// Shows the latest screenshot in the center preview panel and switches to it.
+function showSimulatorPreview(dataUrl) {
+  const img   = document.getElementById('previewCenterSimImg')
+  const frame = document.getElementById('previewCenterFrame')
+  const empty = document.getElementById('previewCenterEmpty')
+  if (!img) return
+
+  img.src = dataUrl
+  img.style.display = 'block'
+  if (frame) { frame.style.display = 'none' }
+  if (empty) { empty.style.display = 'none' }
+
+  // Switch to the Preview tab so the user actually sees it.
+  const previewTab = document.querySelector('.ed-tab[data-tab="agent"]')
+  if (previewTab && !previewTab.classList.contains('active')) {
+    if (typeof switchMainTab === 'function') switchMainTab('agent', previewTab)
+  }
 }
 
 // ── Split resize handle ──────────────────────────────────────────────────────
