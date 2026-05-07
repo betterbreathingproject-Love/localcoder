@@ -25,7 +25,8 @@ function makeToolMsg(id, content) {
 }
 
 function makeLongContent(lines, prefix = '') {
-  return (prefix ? prefix + '\n' : '') + Array.from({ length: lines }, (_, i) => `${i + 1}| line ${i}`).join('\n')
+  // Each line is padded to ~80 chars so 100 lines = ~8000 chars, well above minShrinkChars
+  return (prefix ? prefix + '\n' : '') + Array.from({ length: lines }, (_, i) => `${i + 1}| line ${i} ` + 'x'.repeat(70)).join('\n')
 }
 
 describe('Tool Result Shrinker', () => {

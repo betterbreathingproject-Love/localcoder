@@ -29,6 +29,8 @@ let constrainedDecoder = null
 try { constrainedDecoder = require('./constrained-decoder') } catch (_) { /* optional */ }
 let PostWriteCache = null
 try { ({ PostWriteCache } = require('./post-write-cache')) } catch (_) { /* optional */ }
+let shrinkOlderToolResults = null
+try { ({ shrinkOlderToolResults } = require('./tool-result-shrinker')) } catch (_) { /* optional */ }
 
 // ── Shared event bus for cross-module event observation ──────────────────────
 // WindowSink sends events to the renderer via IPC, but other main-process
@@ -4226,6 +4228,30 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         }
         if (pruned > 0) {
           this.send('qwen-event', { type: 'system', subtype: 'debug', data: `Context hygiene: pruned ${pruned} stale messages (~${pruned * 50} tokens saved)` })
+        }
+      }
+
+      // ── Proactive tool-result shrinking ──────────────────────────────────
+      // Every turn, shrink older tool results to compact receipts with rewind
+      // keys. Prevents context from ballooning — particularly important on
+      // hybrid-architecture models (Qwen3.6-A3B) where turn-to-turn KV cache
+      // reuse isn't possible, so every token in context gets re-prefilled.
+      // Keeps the most recent 3 tool results intact so the agent can still
+      // act on them; older ones can be retrieved via rewind_context if needed.
+      // Benchmark: typical agent workflow saves 35s+ prefill per turn.
+      if (shrinkOlderToolResults) {
+        try {
+          const result = shrinkOlderToolResults(messages, compactor, {
+            keepRecentN: 3,
+            minShrinkChars: 3000,
+            log: (m) => this.send('qwen-event', { type: 'system', subtype: 'debug', data: m }),
+          })
+          if (result.shrunk > 0) {
+            this.send('qwen-event', { type: 'system', subtype: 'debug',
+              data: `⚡ shrunk ${result.shrunk} older tool result(s), saved ~${result.tokensSaved.toLocaleString()} tokens` })
+          }
+        } catch (e) {
+          this.send('qwen-event', { type: 'system', subtype: 'debug', data: `shrinker error (non-fatal): ${e.message}` })
         }
       }
 
