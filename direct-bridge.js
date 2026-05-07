@@ -682,12 +682,13 @@ const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'generate_xcode_project',
-      description: 'Generate an Xcode project.pbxproj file from existing Swift source files. Use this instead of manually writing pbxproj files — it scans the source directory and creates all file references, groups, build phases, and configurations automatically. Also creates missing asset catalog Contents.json files.',
+      description: 'Generate an Xcode project.pbxproj file from existing Swift source files. Use this instead of manually writing pbxproj files — it scans the source directory and creates all file references, groups, build phases, and configurations automatically. Also creates missing asset catalog Contents.json files. If source_dir is omitted or not found, the tool auto-discovers a directory containing *App.swift under project_dir.',
       parameters: {
         type: 'object',
         properties: {
           product_name: { type: 'string', description: 'The product/app name (e.g. "PhotoRanker"). Defaults to the project directory name.' },
-          source_dir: { type: 'string', description: 'The source directory name relative to the project root (e.g. "PhotoRanker"). Defaults to product_name.' },
+          project_dir: { type: 'string', description: 'Absolute or cwd-relative path to the project root (the directory that will contain <product>.xcodeproj). Defaults to the session working directory. Use this when the Xcode project lives inside a subfolder.' },
+          source_dir: { type: 'string', description: 'Source directory path relative to project_dir (e.g. "PhotoRanker" or "Outer/Inner"). If omitted or not found, auto-discovery kicks in.' },
           org_identifier: { type: 'string', description: 'Organization identifier for bundle ID (e.g. "com.example"). Defaults to "com.developer".' },
           platform: { type: 'string', description: '"macos" or "ios". Defaults to "macos".' },
           deployment_target: { type: 'string', description: 'Minimum deployment target (e.g. "14.0"). Defaults to "14.0".' },
@@ -2966,9 +2967,22 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         if (name === 'generate_xcode_project') {
           try {
             const { generateXcodeProject } = require('./xcode-project-gen')
+            // Resolve project_dir: accept absolute or cwd-relative paths,
+            // and reject anything that escapes the session cwd.
+            let resolvedProjectDir = cwd
+            if (typeof args.project_dir === 'string' && args.project_dir.trim()) {
+              const candidate = path.isAbsolute(args.project_dir)
+                ? path.normalize(args.project_dir)
+                : path.resolve(cwd, args.project_dir)
+              const normalizedCwd = path.normalize(cwd)
+              if (candidate !== normalizedCwd && !candidate.startsWith(normalizedCwd + path.sep)) {
+                return { error: `project_dir "${args.project_dir}" resolves outside the working directory (${cwd}). Use a path inside the project root.` }
+              }
+              resolvedProjectDir = candidate
+            }
             const result = generateXcodeProject({
-              projectDir: cwd,
-              productName: args.product_name || path.basename(cwd),
+              projectDir: resolvedProjectDir,
+              productName: args.product_name || path.basename(resolvedProjectDir),
               orgIdentifier: args.org_identifier || 'com.developer',
               platform: args.platform || 'macos',
               deploymentTarget: args.deployment_target || '14.0',
@@ -4536,7 +4550,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             role: 'system',
             content: 'HINT: You have a generate_xcode_project tool that creates project.pbxproj files automatically from Swift source files. ' +
               'Call it with the product name and source directory — do NOT manually read files or write pbxproj XML. ' +
-              'Example: generate_xcode_project({"product_name": "MyApp", "source_dir": "MyApp"})',
+              'If the project lives inside a subfolder of your working directory, pass project_dir pointing at that subfolder. ' +
+              'Example: generate_xcode_project({"product_name": "MyApp", "project_dir": "MyApp Folder", "source_dir": "MyApp"}). ' +
+              'If the call returns "Source directory not found", the error will list candidate directories — re-invoke with source_dir set to one of them rather than guessing.',
           })
         }
 

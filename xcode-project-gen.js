@@ -96,10 +96,89 @@ function buildGroupTree(files, prefix) {
   return tree
 }
 
+// ── Source directory resolver ────────────────────────────────────────────────
+// Finds the Swift source directory under projectDir, tolerating common mistakes:
+//  - case/space differences between productName and the actual folder name
+//  - the source dir being nested a level deeper than projectDir
+//  - the user passing a nested relative path (e.g. "OuterFolder/MyApp")
+// Returns { srcRoot, srcDirName } or { error, candidates }.
+function resolveSourceDir(projectDir, requestedName, productName) {
+  // 1. Exact match as given (supports nested paths like "Foo/Bar").
+  const tryPaths = []
+  if (requestedName) tryPaths.push(requestedName)
+  if (productName && productName !== requestedName) tryPaths.push(productName)
+  // Also try the productName with spaces stripped (common Xcode convention)
+  if (productName) tryPaths.push(productName.replace(/\s+/g, ''))
+
+  for (const p of tryPaths) {
+    const full = path.join(projectDir, p)
+    if (fs.existsSync(full) && fs.statSync(full).isDirectory()) {
+      // Must actually contain Swift files (directly or recursively)
+      const files = scanSourceDir(full)
+      if (files.swift.length > 0) return { srcRoot: full, srcDirName: p }
+    }
+  }
+
+  // 2. Discover candidates: any immediate child of projectDir that contains Swift.
+  //    Also look one level deeper (common when agent creates Proj/Subdir/).
+  const candidates = []
+  let entries
+  try { entries = fs.readdirSync(projectDir, { withFileTypes: true }) }
+  catch { entries = [] }
+
+  for (const e of entries) {
+    if (!e.isDirectory()) continue
+    if (e.name.startsWith('.') || e.name === 'build' || e.name.endsWith('.xcodeproj') ||
+        e.name.endsWith('.xcworkspace') || e.name === 'node_modules') continue
+
+    const childPath = path.join(projectDir, e.name)
+    const childFiles = scanSourceDir(childPath)
+    if (childFiles.swift.length > 0) {
+      // Prefer ones containing *App.swift (SwiftUI entry point)
+      const hasApp = childFiles.swift.some(f => /App\.swift$/.test(f))
+      candidates.push({ name: e.name, hasApp, swiftCount: childFiles.swift.length })
+    }
+
+    // Look one level deeper.
+    let grandchildren
+    try { grandchildren = fs.readdirSync(childPath, { withFileTypes: true }) }
+    catch { continue }
+    for (const g of grandchildren) {
+      if (!g.isDirectory()) continue
+      if (g.name.startsWith('.') || g.name.endsWith('.xcodeproj') ||
+          g.name.endsWith('.xcworkspace')) continue
+      const grandPath = path.join(childPath, g.name)
+      const grandFiles = scanSourceDir(grandPath)
+      if (grandFiles.swift.length > 0) {
+        const hasApp = grandFiles.swift.some(f => /App\.swift$/.test(f))
+        candidates.push({
+          name: `${e.name}/${g.name}`,
+          hasApp,
+          swiftCount: grandFiles.swift.length,
+        })
+      }
+    }
+  }
+
+  // 3. If exactly one candidate has an *App.swift, auto-pick it.
+  //    If multiple, surface them in the error.
+  const appCandidates = candidates.filter(c => c.hasApp)
+  if (appCandidates.length === 1) {
+    const pick = appCandidates[0]
+    return { srcRoot: path.join(projectDir, pick.name), srcDirName: pick.name }
+  }
+  if (candidates.length === 1) {
+    const pick = candidates[0]
+    return { srcRoot: path.join(projectDir, pick.name), srcDirName: pick.name }
+  }
+
+  return { error: null, candidates }
+}
+
 // ── pbxproj generator ─────────────────────────────────────────────────────────
 function generateXcodeProject(opts = {}) {
   const {
-    projectDir,
+    projectDir: projectDirOpt,
     productName = 'App',
     orgIdentifier = 'com.developer',
     platform = 'macos',
@@ -108,15 +187,32 @@ function generateXcodeProject(opts = {}) {
     teamId = '',
   } = opts
 
+  // Resolve projectDir: allow relative paths resolved against cwd.
+  let projectDir = projectDirOpt
+  if (projectDir && !path.isAbsolute(projectDir)) {
+    projectDir = path.resolve(process.cwd(), projectDir)
+  }
+
   if (!projectDir || !fs.existsSync(projectDir)) {
     return { error: `Project directory not found: ${projectDir}` }
   }
 
-  // Resolve source directory
-  const srcDirName = sourceDir || productName
-  const srcRoot = path.join(projectDir, srcDirName)
-  if (!fs.existsSync(srcRoot)) {
-    return { error: `Source directory not found: ${srcRoot}` }
+  // Resolve source directory with smart fallback.
+  const resolved = resolveSourceDir(projectDir, sourceDir, productName)
+  let srcRoot, srcDirName
+  if (resolved.srcRoot) {
+    srcRoot = resolved.srcRoot
+    srcDirName = resolved.srcDirName
+  } else {
+    const requested = sourceDir || productName
+    const candList = (resolved.candidates || [])
+      .sort((a, b) => Number(b.hasApp) - Number(a.hasApp) || b.swiftCount - a.swiftCount)
+      .slice(0, 5)
+      .map(c => `  - ${c.name}${c.hasApp ? ' (contains *App.swift)' : ''} — ${c.swiftCount} Swift file${c.swiftCount === 1 ? '' : 's'}`)
+    const hint = candList.length > 0
+      ? `\n\nCandidate source directories found under ${projectDir}:\n${candList.join('\n')}\n\nRetry with source_dir set to one of these, or pass project_dir pointing to the correct project root.`
+      : `\n\nNo directory containing Swift files was found under ${projectDir}. Either the files have not been written yet, or project_dir points to the wrong location.`
+    return { error: `Source directory not found: ${path.join(projectDir, requested)}${hint}` }
   }
 
   const files = scanSourceDir(srcRoot)
@@ -514,4 +610,4 @@ function generateXcodeProject(opts = {}) {
   }
 }
 
-module.exports = { generateXcodeProject, scanSourceDir, pbxUUID }
+module.exports = { generateXcodeProject, scanSourceDir, pbxUUID, resolveSourceDir }

@@ -929,11 +929,17 @@ async function setupXcodeProject(cwd) {
       }
     } catch { /* non-fatal */ }
 
-    const noTargetsWarning = hasTargets ? '' :
-      `\n\n⚠️  WARNING: The project has no targets configured — xcodebuild will fail.\n` +
-      `The project.pbxproj is missing target definitions. Fix this first:\n` +
-      `  generate_xcode_project({"product_name": "${scheme}", "source_dir": "${scheme}", "platform": "macos", "deployment_target": "14.0"})\n` +
-      `This regenerates project.pbxproj from the Swift source files. Run it before attempting to build.`
+    const noTargetsWarning = hasTargets ? '' : (() => {
+      const projDirAbs = path.dirname(projectPath || workspacePath)
+      const relFromCwd = path.relative(cwd, projDirAbs) || '.'
+      const projArg = relFromCwd === '.' ? '' : `"project_dir": "${relFromCwd}", `
+      return (
+        `\n\n⚠️  WARNING: The project has no targets configured — xcodebuild will fail.\n` +
+        `The project.pbxproj is missing target definitions. Fix this first:\n` +
+        `  generate_xcode_project({"product_name": "${scheme}", ${projArg}"platform": "macos", "deployment_target": "14.0"})\n` +
+        `This regenerates project.pbxproj from the Swift source files. Source_dir auto-discovers if omitted. Run it before attempting to build.`
+      )
+    })()
 
     return {
       ok: true,
