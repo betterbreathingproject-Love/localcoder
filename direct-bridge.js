@@ -1803,7 +1803,9 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           }
           const raw = fs.readFileSync(p, 'utf-8')
           const lines = raw.split('\n')
-          // If adding this file would exceed the budget, truncate it
+          // If adding this file would exceed the budget, stop reading the batch
+          // and tell the agent EXACTLY what to do instead — most agents interpret
+          // "[truncated]" as "read it again in full", which loops forever.
           if (totalChars + raw.length > charBudget && results.length > 0) {
             const remaining = Math.max(1000, charBudget - totalChars)
             let cutLine = lines.length
@@ -1813,7 +1815,17 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
               if (charCount > remaining) { cutLine = i; break }
             }
             const numbered = lines.slice(0, cutLine).map((l, i) => `${i + 1}| ${l}`).join('\n')
-            results.push(`── ${filePath} (${lines.length} lines) ──\n${numbered}\n[truncated — showing ${cutLine} of ${lines.length} lines to fit context budget]`)
+            const unreadFiles = filePaths.slice(filePaths.indexOf(filePath)).join(', ')
+            results.push(
+              `── ${filePath} (${lines.length} lines) ──\n${numbered}\n\n` +
+              `[CONTEXT BUDGET REACHED — not all requested files fit in context]\n` +
+              `Skipped files: ${unreadFiles}\n\n` +
+              `DO NOT re-call read_files with the same paths — you will get the same truncation.\n` +
+              `Instead:\n` +
+              `  • If looking for a specific pattern (imports, references, keywords): use search_files({"patterns":["your-pattern"],"path":"..."}) — targeted and no budget issue\n` +
+              `  • If you need specific sections of the skipped files: use read_file with start_line/end_line\n` +
+              `  • If you need the whole files: split into smaller batches of 1-3 files at a time`
+            )
             totalChars += charCount
             break // stop reading more files
           }
@@ -6259,13 +6271,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               if (fnName === 'read_file') {
                 if (_wasFullRead) {
                   content = lines.slice(0, cutLine).join('\n') +
-                    `\n\n[TRUNCATED — showing lines 1-${cutLine} of ${lines.length} total. ` +
-                    `The file is too large to fit in context at once. ` +
-                    `Use read_file with start_line=${cutLine + 1} to read the next section, or use search_files to find specific patterns.]`
+                    `\n\n[FILE TOO LARGE — showing lines 1-${cutLine} of ${lines.length} total]\n` +
+                    `DO NOT re-call read_file with the same arguments — you will get the same output.\n` +
+                    `To see the rest:\n` +
+                    `  • read_file({"path":"...","start_line":${cutLine + 1}}) for the next section\n` +
+                    `  • search_files({"patterns":["keyword"],"path":"..."}) to find specific content — targeted and fits in context`
                 } else {
                   content = lines.slice(0, cutLine).join('\n') +
-                    `\n\n... [file truncated — showing lines 1-${cutLine} of ~${lines.length} total. ` +
-                    `Call read_file with start_line=${cutLine + 1} to read the next section.]`
+                    `\n\n[section truncated — showing lines 1-${cutLine} of requested range]\n` +
+                    `To continue: read_file with start_line=${cutLine + 1}`
                 }
               } else {
                 content = lines.slice(0, cutLine).join('\n') +
@@ -6302,13 +6316,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               const shownLines = content.slice(0, effectiveLimit).split('\n').length
               if (_wasFullRead) {
                 content = content.slice(0, effectiveLimit) +
-                  `\n\n[TRUNCATED — showing ~${shownLines} of ${totalLines} lines. ` +
-                  `The file is too large to fit in context at once. ` +
-                  `Use read_file with start_line=${shownLines + 1} to read the next section, or use search_files to find specific patterns.]`
+                  `\n\n[FILE TOO LARGE — showing lines 1-${shownLines} of ${totalLines} total]\n` +
+                  `DO NOT re-call the same tool with the same arguments — the output will not change.\n` +
+                  `To see the rest:\n` +
+                  `  • read_file with start_line=${shownLines + 1} for the next section\n` +
+                  `  • search_files({"patterns":["keyword"],"path":"..."}) to find specific content — targeted and fits in context`
               } else {
                 content = content.slice(0, effectiveLimit) +
-                  `\n\n... [file truncated — showing lines 1-${shownLines} of ~${totalLines} total. ` +
-                  `Call read_file with start_line=${shownLines + 1} to read the next section.]`
+                  `\n\n[section truncated — showing lines 1-${shownLines}]\n` +
+                  `To continue: read_file with start_line=${shownLines + 1}`
               }
             }
             } // end non-nav-tool compression
