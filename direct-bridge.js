@@ -27,6 +27,8 @@ let ToolSpeculator = null
 try { ({ ToolSpeculator } = require('./tool-speculator')) } catch (_) { /* optional */ }
 let constrainedDecoder = null
 try { constrainedDecoder = require('./constrained-decoder') } catch (_) { /* optional */ }
+let PostWriteCache = null
+try { ({ PostWriteCache } = require('./post-write-cache')) } catch (_) { /* optional */ }
 
 // ── Shared event bus for cross-module event observation ──────────────────────
 // WindowSink sends events to the renderer via IPC, but other main-process
@@ -3248,6 +3250,15 @@ class DirectBridge {
     // Lazily created when we have a cwd (per-run). See _agentLoop and _streamCompletion.
     this._currentCwd = null
     this._specStreamArgs = new Map()  // Map<idx, lastSpeculatedArgs>
+
+    // ── Post-write read cache ─────────────────────────────────────────────
+    // Cache the content of files we just wrote. If the agent reads them back
+    // within N turns and the file hasn't been modified externally, return
+    // the cache directly instead of re-prefilling the model.
+    // Disable via opts.postWriteCache = false.
+    this._postWriteCache = (opts.postWriteCache !== false && PostWriteCache)
+      ? new PostWriteCache({ maxEntries: 50, ttlTurns: 10 })
+      : null
   }
 
   setLspManager(lspManager) {
@@ -5925,7 +5936,35 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Execute — use pre-fetched result if available (parallel I/O optimization),
         // then check speculator for in-flight speculations that match.
         let result
-        if (_prefetchResults.has(tc.id)) {
+        // ── Post-write cache: serve recently-written files without re-read ─
+        // If the agent wrote this file recently and it hasn't changed externally,
+        // return a SHORT notice pointing to the existing content in context
+        // (which is the same content the agent just wrote). This eliminates a
+        // full re-prefill of the file.
+        if (!result && this._postWriteCache && fnName === 'read_file' && fnArgs.path
+            && fnArgs.start_line == null && fnArgs.end_line == null) {
+          const absPath = path.resolve(cwd, fnArgs.path)
+          const cached = this._postWriteCache.tryServe(absPath, turn)
+          if (cached) {
+            // Short receipt instead of full content — the content is already
+            // in the conversation from when we wrote it, so no need to re-prefill.
+            const totalLines = cached.content.split('\n').length
+            result = {
+              result:
+                `[post-write cache] File unchanged since you wrote it ${cached.ageInTurns} turn(s) ago ` +
+                `(${totalLines} lines, hash=${cached.hash}). ` +
+                `The content you wrote is already in your context above — refer to that. ` +
+                `Do NOT re-read the file. Proceed to the next step.`,
+              _fullRead: true,
+              _totalLines: totalLines,
+            }
+            this.send('qwen-event', { type: 'system', subtype: 'debug',
+              data: `⚡ post-write cache hit: ${fnArgs.path} (age=${cached.ageInTurns} turns, ${totalLines} lines)` })
+          }
+        }
+        if (result) {
+          // already served from post-write cache
+        } else if (_prefetchResults.has(tc.id)) {
           result = await _prefetchResults.get(tc.id)
         } else if (this._toolSpeculator && ToolSpeculator && ToolSpeculator.isSafe(fnName)) {
           // Speculator path — hit returns cached result; miss falls through to fresh exec
@@ -6018,6 +6057,24 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           content = speculativeMsg + content
         }
 
+        // ── Post-write cache: stash content for fast re-read ────────────
+        // Record every successful write so the agent can re-read without
+        // hitting disk + re-prefilling. Independent of LSP availability.
+        if ((fnName === 'write_file' || fnName === 'edit_file') && !isError && this._postWriteCache && fnArgs.path) {
+          try {
+            const absPath = path.resolve(cwd, fnArgs.path)
+            if (fnName === 'write_file' && typeof fnArgs.content === 'string') {
+              this._postWriteCache.recordWrite(absPath, fnArgs.content, turn)
+            } else if (fnName === 'edit_file') {
+              // For edit_file, read back the post-edit content
+              try {
+                const after = fs.readFileSync(absPath, 'utf-8')
+                this._postWriteCache.recordWrite(absPath, after, turn)
+              } catch { /* skip caching if read fails */ }
+            }
+          } catch { /* non-fatal */ }
+        }
+
         // ── Performance: deferred post-edit diagnostics ─────────────────────
         // Instead of blocking the tool loop for up to 10s waiting for LSP
         // diagnostics, fire the request async and inject results at the start
@@ -6032,6 +6089,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               }
             }
           }
+
           this.send('qwen-event', { type: 'lsp-activity', action: 'diagnostics-check-deferred', path: fnArgs.path })
           const _diagPath = fnArgs.path
           const _diagLspManager = this._lspManager
@@ -6115,6 +6173,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // Catches heredocs (cat > file), redirects (echo > file), sed -i, etc.
         if (fnName === 'bash' && !isError && this._lspManager?.getStatus().status === 'ready') {
           const cmd = fnArgs.command || ''
+          // Invalidate post-write cache — bash may have touched any file on disk.
+          // Conservative: clear everything when bash runs a write-ish command.
+          if (this._postWriteCache && /\b(?:cat\s*>|>>?|tee|sed\s+-i|mv|cp|rm|git\s+(?:checkout|reset|apply|commit)|npm\s+install|pip\s+install|xcodebuild\s+[^\s]*build)\b/.test(cmd)) {
+            this._postWriteCache.clear()
+          }
           const fileWritePatterns = [
             /cat\s+>\s*(\S+)/,           // cat > file
             />\s*(\S+)/,                  // echo "x" > file
@@ -7831,6 +7894,9 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
     this._specStreamArgs = new Map()
     this._currentCwd = null
 
+    // ── Clear post-write cache on interrupt ────────────────────────────
+    if (this._postWriteCache) this._postWriteCache.clear()
+
     // ── Persist agent notes on interrupt for session resume ────────────────
     // If the agent saved notes during this run, emit them so the renderer
     // can append them to the session history. On next "carry on", the notes
@@ -7864,6 +7930,8 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
       this._toolSpeculator.clear()
       this._toolSpeculator = null
     }
+    // Clear post-write cache on close
+    if (this._postWriteCache) this._postWriteCache.clear()
     // Stop Chrome DevTools MCP server if running
     if (chromeDevTools) {
       try { chromeDevTools.stopDevTools() } catch {}
