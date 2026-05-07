@@ -31,6 +31,8 @@ let PostWriteCache = null
 try { ({ PostWriteCache } = require('./post-write-cache')) } catch (_) { /* optional */ }
 let shrinkOlderToolResults = null
 try { ({ shrinkOlderToolResults } = require('./tool-result-shrinker')) } catch (_) { /* optional */ }
+let systemPromptCache = null
+try { systemPromptCache = require('./system-prompt-cache') } catch (_) { /* optional */ }
 
 // ── Shared event bus for cross-module event observation ──────────────────────
 // WindowSink sends events to the renderer via IPC, but other main-process
@@ -3723,7 +3725,18 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     }
 
     const workDir = cwd || process.cwd()
-    const systemPrompt = systemPromptOverride || this._buildSystemPrompt(workDir, permissionMode)
+    // Use the cache when available — identical (role, cwd, permissionMode)
+    // tuples produce byte-identical prompts so the server's prefix cache can hit.
+    const systemPrompt = systemPromptOverride || (
+      systemPromptCache
+        ? systemPromptCache.getCachedSystemPrompt(
+            this._agentRole || 'general',
+            workDir,
+            permissionMode,
+            () => this._buildSystemPrompt(workDir, permissionMode)
+          )
+        : this._buildSystemPrompt(workDir, permissionMode)
+    )
 
     // ── Performance: split system prompt for prefix cache stability ────────
     // The MLX server caches the KV state of the system prompt prefix. When the
@@ -3765,8 +3778,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     if (!systemPromptOverride) {
       try {
         const { loadSteeringDocs, formatSteeringForPrompt } = require('./steering-loader')
-        const steeringDocs = loadSteeringDocs(workDir)
-        const steeringContent = formatSteeringForPrompt(steeringDocs)
+        const { formatted: steeringContent } = systemPromptCache
+          ? systemPromptCache.getCachedSteering(workDir, loadSteeringDocs, formatSteeringForPrompt)
+          : { formatted: formatSteeringForPrompt(loadSteeringDocs(workDir)) }
         if (steeringContent) {
           variableSystemContent += '\n\n' + steeringContent
         }
@@ -6812,7 +6826,14 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                   this.send('qwen-event', { type: 'routing-decision', agentType: newRole, source: 'todo' })
                   // Update system message so the model gets the new role preamble on the next turn
                   const sysMsg = messages.find(m => m.role === 'system')
-                  if (sysMsg) sysMsg.content = this._buildSystemPrompt(cwd, permissionMode)
+                  if (sysMsg) {
+                    sysMsg.content = systemPromptCache
+                      ? systemPromptCache.getCachedSystemPrompt(
+                          newRole, cwd, permissionMode,
+                          () => this._buildSystemPrompt(cwd, permissionMode)
+                        )
+                      : this._buildSystemPrompt(cwd, permissionMode)
+                  }
                 }
               }
             }

@@ -5,6 +5,8 @@ const fs = require('node:fs')
 const { DirectBridge, WindowSink, WindowInputRequester, sinkBus } = require('./direct-bridge')
 const { AgentPool, CATEGORY_KEYWORDS } = require('./agent-pool')
 const { loadSteeringDocs, formatSteeringForPrompt } = require('./steering-loader')
+let systemPromptCache = null
+try { systemPromptCache = require('./system-prompt-cache') } catch (_) { /* optional */ }
 
 // IPC handler modules
 const ipcServer = require('./main/ipc-server')
@@ -204,11 +206,17 @@ const agentPool = new AgentPool({
 
     // The bridge already has agentRole set — _buildSystemPrompt will inject the correct
     // role overlay. We only need to add steering docs and routing instructions on top.
-    let systemOverride = bridge._buildSystemPrompt(cwd, 'auto-edit')
+    let systemOverride = systemPromptCache
+      ? systemPromptCache.getCachedSystemPrompt(
+          typeName, cwd, 'auto-edit',
+          () => bridge._buildSystemPrompt(cwd, 'auto-edit')
+        )
+      : bridge._buildSystemPrompt(cwd, 'auto-edit')
 
     // Inject steering docs after base prompt, before routing instructions
-    const steeringDocs = loadSteeringDocs(cwd)
-    const steeringContent = formatSteeringForPrompt(steeringDocs)
+    const steeringContent = systemPromptCache
+      ? systemPromptCache.getCachedSteering(cwd, loadSteeringDocs, formatSteeringForPrompt).formatted
+      : formatSteeringForPrompt(loadSteeringDocs(cwd))
     if (steeringContent) {
       systemOverride += '\n\n' + steeringContent
     }
@@ -307,6 +315,9 @@ const ctx = {
   getCurrentProject: () => currentProject,
   setCurrentProject: (p) => {
     currentProject = typeof p === 'string' ? p.trim() : p
+    // Invalidate any cached system prompt / steering for the new (and old) project
+    // so the next dispatch sees fresh content.
+    try { systemPromptCache?.invalidateAll() } catch {}
     // Start or restart LSP for the new project directory
     if (lspManager) {
       const status = lspManager.getStatus().status
