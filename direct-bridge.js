@@ -7145,17 +7145,18 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             memoryClient._httpRequest?.('POST', '/memory/session/enrich', { session_id: _sessionId }, 5000).catch(() => {})
           }
 
-          // Extract numbered options from the summary and emit as ask_user
-          // BEFORE the result event (which sets agentFinished=true and blocks further events)
-          const optionLines = summary.match(/^\d+\.\s+.+$/gm)
-          if (optionLines && optionLines.length >= 2) {
-            const options = optionLines.map(l => l.replace(/^\d+\.\s+/, '').trim()).slice(0, 5)
-            this.send('qwen-event', {
-              type: 'ask-user',
-              question: 'What would you like to do next?',
-              options,
-            })
-          }
+          // NOTE: We intentionally do NOT emit an 'ask-user' event here even
+          // when the summary contains numbered follow-up options. The renderer's
+          // session-end handler already calls _injectQuickReplyChips() which
+          // parses the same numbered options out of the task_complete summary
+          // and renders clickable quick-reply chips that dispatch the user's
+          // choice as a NEW agent run (the correct flow for "what next").
+          //
+          // Emitting an ask-user event here creates a phantom .ask-user-card
+          // whose reply channel (WindowInputRequester.resolveReply) has no
+          // pending promise to resolve — so every reply (chip, "Other…" box,
+          // and main prompt box, which sendAgentMode routes to the card) is
+          // silently dropped. See renderer/app.js _injectQuickReplyChips.
 
           this.send('qwen-event', {
             type: 'result',

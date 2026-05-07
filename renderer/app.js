@@ -1627,7 +1627,24 @@ function sendAgent() {
     return
   }
 
-  if(isGenerating) return
+  // ── pending ask_user: route the typed message as a reply ────────────────
+  // When the agent is awaiting input via the ask_user tool, a live ask-user
+  // card is shown AND isGenerating is still true. Typing into the main input
+  // should feed the reply to the card rather than being dropped by the
+  // isGenerating guard below. This check must come BEFORE that guard.
+  if (isGenerating) {
+    const pendingAskCard = document.querySelector('.ask-user-card')
+    if (pendingAskCard) {
+      _submitAskUserReply(pendingAskCard.id, prompt)
+      return
+    }
+    return  // fall through to original double-send guard
+  }
+
+  // Stale quick-reply cards from a previous completed run are not tied to a
+  // pending input promise — remove any lingering ones so the new prompt
+  // starts a fresh run instead of being swallowed.
+  document.querySelectorAll('.ask-user-quick-reply, .ask-user-card').forEach(el => el.remove())
 
   // ── slash command interception (Task 10.7) ──
   if (prompt.startsWith('/')) {
@@ -1661,15 +1678,21 @@ function sendAgent() {
 
 // ── agent mode (Qwen Code SDK with tools) ─────────────────────────────────────
 async function sendAgentMode(prompt, opts = {}) {
-  // If the agent has a pending ask_user question, route the user's typed
-  // message as a reply instead of interrupting and starting a new run.
-  // This makes typing in the main input equivalent to typing in the ask_user card.
-  const pendingAskCard = document.querySelector('.ask-user-card')
-  if (pendingAskCard && prompt) {
-    const cardId = pendingAskCard.id
-    _submitAskUserReply(cardId, prompt)
-    document.getElementById('agentPrompt').value = ''
-    return
+  // If the agent has a LIVE ask_user question open (i.e. the agent is still
+  // running and waiting on input via WindowInputRequester), route the user's
+  // typed message as a reply instead of interrupting and starting a new run.
+  // Stale cards from previous completed runs are NOT live — isGenerating is
+  // false in that case, so sendAgent() already cleared them before calling
+  // us. We still double-check here because sendAgentMode is also called from
+  // _sendQuickReply (post-completion) where isGenerating is false.
+  if (isGenerating) {
+    const pendingAskCard = document.querySelector('.ask-user-card')
+    if (pendingAskCard && prompt) {
+      const cardId = pendingAskCard.id
+      _submitAskUserReply(cardId, prompt)
+      document.getElementById('agentPrompt').value = ''
+      return
+    }
   }
 
   if (!currentProject) {
