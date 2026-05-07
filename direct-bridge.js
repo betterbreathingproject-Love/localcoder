@@ -3225,6 +3225,17 @@ class DirectBridge {
     // injected as a system message on the next turn instead of blocking.
     this._pendingDiagnostics = null  // Promise<{path, diagnostics}> | null
     this._coalescedToolCallIds = new Set()  // Track auto-coalesced read_file IDs
+
+    // ── Speculative tool execution ────────────────────────────────────────
+    // When the model streams a safe tool_call (read_file, search_files, etc.),
+    // we can parse partial args and start executing the tool in the background.
+    // By the time the full tool_call arrives, the result is often ready.
+    // Safe default: enable if module is available, disable via opts.speculateTools = false
+    this._toolSpeculator = null
+    this._speculateEnabled = opts.speculateTools !== false && !!ToolSpeculator
+    // Lazily created when we have a cwd (per-run). See _agentLoop and _streamCompletion.
+    this._currentCwd = null
+    this._specStreamArgs = new Map()  // Map<idx, lastSpeculatedArgs>
   }
 
   setLspManager(lspManager) {
@@ -3899,6 +3910,27 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     // Scope the rewind store to this project so keys don't collide across projects
     compactor.setRewindProject(cwd)
 
+    // ── Initialize speculative tool executor for this run ────────────────
+    // Binds cwd/lspManager/etc so the speculator can call executeTool with
+    // the right project scope. Cleared at close()/interrupt().
+    if (this._speculateEnabled && ToolSpeculator && !this._toolSpeculator) {
+      this._currentCwd = cwd
+      this._toolSpeculator = new ToolSpeculator({
+        maxInflight: 4,
+        execute: async (name, args) => {
+          return await executeTool(
+            name, args, cwd,
+            this._browserInstance, this._lspManager, this._inputRequester,
+            { send: () => {} /* silent events for speculations */, _sessionId: 'speculative' }
+          )
+        },
+        onSpeculate: (info) => {
+          this.send('qwen-event', { type: 'system', subtype: 'debug',
+            data: `🔮 speculating ${info.name}(${JSON.stringify(info.args).slice(0, 60)})` })
+        },
+      })
+    }
+
     // Read calibrated settings if available, fall back to parameter/hardcoded defaults
     const profile = this._getCalibrationProfile?.()
     const effectiveMaxTurns = profile?.maxTurns ?? maxTurns
@@ -4049,6 +4081,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
       // Clear coalesced tool call IDs from previous turn
       this._coalescedToolCallIds.clear()
+      // Clear per-stream speculator tracking (new turn = new streams)
+      if (this._specStreamArgs) this._specStreamArgs.clear()
 
       // Drain any user-injected messages (from mid-run prompts / spec iteration).
       // Insert them as user messages so the model sees the updated objective.
@@ -5876,10 +5910,22 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           }
         }
 
-        // Execute — use pre-fetched result if available (parallel I/O optimization)
-        const result = _prefetchResults.has(tc.id)
-          ? await _prefetchResults.get(tc.id)
-          : await executeTool(fnName, fnArgs, cwd, this._browserInstance, this._lspManager, this._inputRequester, { send: this.send.bind(this), _sessionId })
+        // Execute — use pre-fetched result if available (parallel I/O optimization),
+        // then check speculator for in-flight speculations that match.
+        let result
+        if (_prefetchResults.has(tc.id)) {
+          result = await _prefetchResults.get(tc.id)
+        } else if (this._toolSpeculator && ToolSpeculator && ToolSpeculator.isSafe(fnName)) {
+          // Speculator path — hit returns cached result; miss falls through to fresh exec
+          const specResolved = await this._toolSpeculator.resolve(fnName, fnArgs)
+          result = specResolved.result
+          if (specResolved.hit) {
+            this.send('qwen-event', { type: 'system', subtype: 'debug',
+              data: `⚡ speculation hit for ${fnName} — skipped tool wait` })
+          }
+        } else {
+          result = await executeTool(fnName, fnArgs, cwd, this._browserInstance, this._lspManager, this._inputRequester, { send: this.send.bind(this), _sessionId })
+        }
         const isError = !!result.error
         let content = result.error || result.result
         // Track whether read_file returned the complete file — used to prevent
@@ -7331,6 +7377,27 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                   } else {
                     toolCalls[idx].function.arguments += incoming
                   }
+
+                  // ── Speculative tool execution hook ─────────────────────
+                  // Each delta, try to parse current args. If they're a
+                  // complete, safe tool call, fire a background execution.
+                  // If guess is wrong, speculator discards it silently.
+                  if (this._speculateEnabled && this._toolSpeculator) {
+                    const accumulated = toolCalls[idx].function.arguments
+                    const fnName = toolCalls[idx].function.name
+                    if (fnName && ToolSpeculator && ToolSpeculator.isSafe(fnName)) {
+                      try {
+                        const parsedArgs = JSON.parse(accumulated)
+                        // Only re-speculate if args changed since last attempt
+                        const lastSig = this._specStreamArgs.get(idx)
+                        const currentSig = JSON.stringify(parsedArgs)
+                        if (lastSig !== currentSig) {
+                          this._specStreamArgs.set(idx, currentSig)
+                          this._toolSpeculator.speculate(fnName, parsedArgs)
+                        }
+                      } catch { /* args still streaming — try again next delta */ }
+                    }
+                  }
                 }
 
                 // Stream tool call progress to the renderer so users can see
@@ -7738,6 +7805,16 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
     this._cachedToolDefs = null
     this._cachedToolDefsKey = null
 
+    // ── Clear tool speculator ───────────────────────────────────────────
+    // Drop any in-flight speculations — their cwd scope is no longer valid.
+    // The speculator itself is recreated in _agentLoop on next run().
+    if (this._toolSpeculator) {
+      this._toolSpeculator.clear()
+      this._toolSpeculator = null
+    }
+    this._specStreamArgs = new Map()
+    this._currentCwd = null
+
     // ── Persist agent notes on interrupt for session resume ────────────────
     // If the agent saved notes during this run, emit them so the renderer
     // can append them to the session history. On next "carry on", the notes
@@ -7766,6 +7843,11 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
       await this._browserInstance.closeBrowser().catch(() => {})
     }
     this._browserInstance = null
+    // Clear speculator on close too
+    if (this._toolSpeculator) {
+      this._toolSpeculator.clear()
+      this._toolSpeculator = null
+    }
     // Stop Chrome DevTools MCP server if running
     if (chromeDevTools) {
       try { chromeDevTools.stopDevTools() } catch {}
