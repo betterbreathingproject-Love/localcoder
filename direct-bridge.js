@@ -2842,9 +2842,10 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           await _reviewBrowser.close()
           _reviewBrowser = null
 
-          // Send screenshot to the vision-swap endpoint — this hot-swaps the
-          // primary 35B model into vision mode (mlx_vlm), does the inference
-          // with full intelligence, then swaps back to text-only for speed.
+          // ── Vision routing: fast model first, hot-swap fallback ──────────
+          // If the fast model (0.8B) is loaded with vision, use it directly —
+          // no model swap needed, ~2s response. If unavailable, fall back to
+          // hot-swapping the 35B into vision mode (~10-15s but full intelligence).
           const imgB64 = `data:image/jpeg;base64,${screenshotBuf.toString('base64')}`
           const reviewPrompt = args.prompt ||
             'Review this webpage screenshot for visual quality. Focus on:\n' +
@@ -2854,40 +2855,64 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
             '- Colors: Is the color scheme cohesive and professional?\n' +
             '- Overall impression: Does this look polished or amateurish?\n' +
             'Be specific about what needs fixing and where on the page.'
-          const visionContent = [
-            { type: 'text', text: reviewPrompt },
-            { type: 'image_url', image_url: { url: imgB64 } },
-          ]
-          const visionBody = JSON.stringify({
-            messages: [{ role: 'user', content: visionContent }],
-            max_tokens: 1024,
-          })
-          if (notify && notify.send) {
-            notify.send('qwen-event', { type: 'system', subtype: 'debug', data: '🔄 Vision swap: loading 35B in vision mode for review...' })
+
+          let reviewText = null
+          let visionSource = 'unknown'
+
+          // Try fast model first (if loaded)
+          if (assistClient) {
+            const rawB64 = screenshotBuf.toString('base64')
+            const fastResult = await assistClient.assistVision(rawB64, 'image/jpeg', reviewPrompt)
+            if (fastResult) {
+              reviewText = fastResult
+              visionSource = 'fast-model (0.8B)'
+              if (notify && notify.send) {
+                notify.send('qwen-event', { type: 'system', subtype: 'debug', data: '⚡ Vision review via fast model (no swap needed)' })
+              }
+            }
           }
-          const visionResult = await new Promise((resolve, reject) => {
-            const req = http.request({
-              hostname: '127.0.0.1', port: SERVER_PORT,
-              path: '/admin/vision-inference', method: 'POST',
-              timeout: 180000, // 3 min — includes model swap time
-              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(visionBody) },
-            }, (res) => {
-              let data = ''
-              res.on('data', chunk => data += chunk)
-              res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error(data || 'Empty response')) } })
+
+          // Fast model unavailable or returned nothing — hot-swap the 35B
+          if (!reviewText) {
+            if (notify && notify.send) {
+              notify.send('qwen-event', { type: 'system', subtype: 'debug', data: '🔄 Vision swap: loading 35B in vision mode for review...' })
+            }
+            const visionContent = [
+              { type: 'text', text: reviewPrompt },
+              { type: 'image_url', image_url: { url: imgB64 } },
+            ]
+            const visionBody = JSON.stringify({
+              messages: [{ role: 'user', content: visionContent }],
+              max_tokens: 1024,
             })
-            req.on('timeout', () => { req.destroy(); reject(new Error('Vision review timed out (180s) — model swap may have failed')) })
-            req.on('error', reject)
-            req.write(visionBody)
-            req.end()
-          })
-          const reviewText = visionResult.choices?.[0]?.message?.content || 'Vision model returned no analysis.'
-          const swapTime = visionResult.vision_swap_time_s || '?'
+            const visionResult = await new Promise((resolve, reject) => {
+              const req = http.request({
+                hostname: '127.0.0.1', port: SERVER_PORT,
+                path: '/admin/vision-inference', method: 'POST',
+                timeout: 180000, // 3 min — includes model swap time
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(visionBody) },
+              }, (res) => {
+                let data = ''
+                res.on('data', chunk => data += chunk)
+                res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error(data || 'Empty response')) } })
+              })
+              req.on('timeout', () => { req.destroy(); reject(new Error('Vision review timed out (180s) — model swap may have failed')) })
+              req.on('error', reject)
+              req.write(visionBody)
+              req.end()
+            })
+            reviewText = visionResult.choices?.[0]?.message?.content || 'Vision model returned no analysis.'
+            const swapTime = visionResult.vision_swap_time_s || '?'
+            visionSource = `35B vision model, ${swapTime}s swap`
+            if (notify && notify.send) {
+              notify.send('qwen-event', { type: 'system', subtype: 'debug', data: `✅ Vision review complete (${swapTime}s swap cycle)` })
+            }
+          }
+
           if (notify && notify.send) {
             notify.send('qwen-event', { type: 'vision-analysis', text: `[Vision Review: ${args.target}]\n${reviewText}` })
-            notify.send('qwen-event', { type: 'system', subtype: 'debug', data: `✅ Vision review complete (${swapTime}s swap cycle)` })
           }
-          return { result: `[Vision Review of ${args.target} — 35B vision model, ${swapTime}s swap]\n\n${reviewText}` }
+          return { result: `[Vision Review of ${args.target} — ${visionSource}]\n\n${reviewText}` }
         } catch (err) {
           if (_reviewBrowser) { try { await _reviewBrowser.close() } catch {} }
           return { error: `vision_review failed: ${err.message}` }
