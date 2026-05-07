@@ -958,36 +958,6 @@ async def archive_compress():
 
 # ── Vector Memory Endpoints ──────────────────────────────────────────────────
 
-@router.post("/embed")
-async def embed_text(req: VectorAddRequest):
-    """Return the raw embedding vector for text, without storing it.
-
-    Used by the tool filter (tool-filter.js) to score tool relevance against
-    the user's current prompt. Pure compute: no side effects, no persistence.
-
-    Returns HTTP 503 if VectorMemory / embedding model is unavailable.
-    """
-    if _vm is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Embedding model unavailable — ONNX MiniLM not loaded"
-        )
-    try:
-        # Use search_query task prefix since this is typically a query-style embed
-        vector = await _vm.embed(req.text, task="search_query")
-        if not vector:
-            raise HTTPException(status_code=500, detail="Empty embedding returned")
-        return {
-            "embedding": vector,
-            "dim": len(vector),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to embed text: {e}")
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
-
-
 @router.post("/vector/add", status_code=201)
 async def vector_add(req: VectorAddRequest):
     """Add text to Vector Memory with ONNX MiniLM embedding and secret filtering.
