@@ -1750,7 +1750,33 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
               }
             }
           }
-          if (!fs.existsSync(p)) return { error: `File not found: ${args.path}. Tip: paths must be relative to the project root — do not include the project folder name as a prefix.` }
+          if (!fs.existsSync(p)) {
+            // Build a helpful error: walk up the path to find the deepest parent
+            // that exists and list its entries. Agents often construct wrong
+            // paths after seeing a file tree; showing nearby names is faster
+            // than forcing them to call list_dir separately.
+            const requested = args.path
+            let cur = p
+            let climbed = 0
+            while (cur && cur !== path.dirname(cur) && !fs.existsSync(cur)) {
+              cur = path.dirname(cur)
+              climbed++
+            }
+            let hint = ''
+            if (fs.existsSync(cur) && fs.statSync(cur).isDirectory()) {
+              try {
+                const entries = fs.readdirSync(cur, { withFileTypes: true })
+                  .filter(e => !e.name.startsWith('.'))
+                  .slice(0, 30)
+                  .map(e => e.name + (e.isDirectory() ? '/' : ''))
+                const relCur = path.relative(cwd, cur) || '.'
+                hint = entries.length > 0
+                  ? `\n\nDeepest existing parent: ${relCur}\nContents: ${entries.join(', ')}${climbed > 1 ? '\n\nThe path you passed references directories that do not exist.' : ''}`
+                  : `\n\nDeepest existing parent: ${relCur} (empty)`
+              } catch { /* ignore */ }
+            }
+            return { error: `File not found: ${requested}. Tip: paths must be relative to the project root — do not include the project folder name as a prefix.${hint}` }
+          }
         }
         const stat = fs.statSync(p)
         if (stat.size > 512 * 1024) return { error: `File too large (${(stat.size / 1024).toFixed(0)}KB). Use start_line/end_line to read sections, or use search_files to find specific content.` }
@@ -1844,7 +1870,19 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         return { result: results.join('\n\n'), _fullRead: true, _totalLines: results.length }
       }
       case 'write_file': {
-        if (typeof args.content !== 'string') return { error: 'content must be a string' }
+        // Auto-coerce objects/arrays to JSON — the model frequently passes a
+        // structured literal when the "content" is JSON (Contents.json,
+        // package.json, etc.). Stringify rather than erroring.
+        let _coerced = false
+        if (args.content !== null && typeof args.content === 'object') {
+          try {
+            args.content = JSON.stringify(args.content, null, 2) + '\n'
+            _coerced = true
+          } catch (_jsonErr) {
+            return { error: 'content must be a string or a JSON-serializable value' }
+          }
+        }
+        if (typeof args.content !== 'string') return { error: 'content must be a string (got ' + typeof args.content + '). If writing JSON, pass the serialized string or a plain object — the tool will stringify it.' }
         const v = validatePath(args.path)
         if (v.error) return v
         const p = v.resolved
@@ -1882,11 +1920,24 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         fs.writeFileSync(p, args.content, 'utf-8')
         if (notify && notify._sessionId) undoRecord(notify._sessionId, p, _beforeWrite, args.content, 'write_file')
         _scheduleAutoCommit(cwd)
-        return { result: `Wrote ${args.content.length} chars to ${args.path}` }
+        const _coercedNote = _coerced ? ' (object auto-stringified to JSON)' : ''
+        return { result: `Wrote ${args.content.length} chars to ${args.path}${_coercedNote}` }
       }
       case 'edit_file': {
-        if (typeof args.old_string !== 'string') return { error: 'old_string must be a string' }
-        if (typeof args.new_string !== 'string') return { error: 'new_string must be a string' }
+        // Tolerate non-string old_string/new_string by stringifying — the model
+        // sometimes sends arrays of lines or JSON objects.
+        if (typeof args.old_string !== 'string') {
+          if (args.old_string == null) return { error: 'old_string is required' }
+          if (Array.isArray(args.old_string)) args.old_string = args.old_string.join('\n')
+          else if (typeof args.old_string === 'object') args.old_string = JSON.stringify(args.old_string, null, 2)
+          else args.old_string = String(args.old_string)
+        }
+        if (typeof args.new_string !== 'string') {
+          if (args.new_string == null) return { error: 'new_string is required' }
+          if (Array.isArray(args.new_string)) args.new_string = args.new_string.join('\n')
+          else if (typeof args.new_string === 'object') args.new_string = JSON.stringify(args.new_string, null, 2)
+          else args.new_string = String(args.new_string)
+        }
         const v = validatePath(args.path)
         if (v.error) return v
         const p = v.resolved
@@ -2114,7 +2165,13 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         // Line-range replacement — bypasses old_string matching entirely.
         // The agent specifies start_line and end_line (1-indexed, inclusive)
         // and the content to replace those lines with.
-        if (typeof args.new_content !== 'string') return { error: 'new_content must be a string' }
+        // Coerce arrays/objects to strings.
+        if (typeof args.new_content !== 'string') {
+          if (args.new_content == null) return { error: 'new_content is required' }
+          if (Array.isArray(args.new_content)) args.new_content = args.new_content.join('\n')
+          else if (typeof args.new_content === 'object') args.new_content = JSON.stringify(args.new_content, null, 2)
+          else args.new_content = String(args.new_content)
+        }
         if (typeof args.start_line !== 'number' || typeof args.end_line !== 'number') {
           return { error: 'start_line and end_line must be numbers (1-indexed)' }
         }
@@ -2381,6 +2438,20 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
       }
       case 'bash': {
         if (typeof args.command !== 'string' || !args.command.trim()) return { error: 'command must be a non-empty string. Usage: bash({"command": "ls -la"})' }
+        // Strip the -quiet flag from xcodebuild commands. It hides the
+        // "BUILD SUCCEEDED" marker along with the verbose log, leaving only
+        // warnings in stderr — agents commonly misread that as a failure.
+        // Keep the normal log; if the caller truly wants a short log they can
+        // pipe through tail/grep themselves.
+        let _quietStripped = false
+        {
+          const cmd = args.command
+          // Match xcodebuild … -quiet (or --quiet) anywhere in a pipeline
+          if (/\bxcodebuild\b/.test(cmd) && /\s-{1,2}quiet\b/.test(cmd)) {
+            args.command = cmd.replace(/\s-{1,2}quiet\b/g, '')
+            _quietStripped = true
+          }
+        }
         // Block obviously dangerous commands
         const dangerous = /\b(rm\s+-rf\s+\/|mkfs|dd\s+if=|:(){ :|fork\s*bomb)\b/i
         if (dangerous.test(args.command)) return { error: 'Command blocked for safety' }
@@ -2551,11 +2622,14 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           proc.on('close', (code) => {
             clearTimeout(timer)
             clearInterval(heartbeatInterval)
+            const _quietNote = _quietStripped
+              ? '[bash note: -quiet flag removed from xcodebuild — it hides BUILD SUCCEEDED and misleads the agent]\n'
+              : ''
             if (killed) {
-              resolve({ error: `Command timed out or exceeded output limit (${timeoutMs / 1000}s):\n${(stdout + '\n' + stderr).trim().slice(0, 2000)}` })
+              resolve({ error: `${_quietNote}Command timed out or exceeded output limit (${timeoutMs / 1000}s):\n${(stdout + '\n' + stderr).trim().slice(0, 2000)}` })
             } else if (code === 0) {
               if (stdout) {
-                resolve({ result: stdout })
+                resolve({ result: _quietNote + stdout })
               } else {
                 // Command succeeded with no stdout — common for write operations
                 // (cat > file << EOF, echo > file, cp, mv, mkdir, etc.).
@@ -2581,7 +2655,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
                 }
                 if (!errorDetail) errorDetail = 'Command exited with non-zero status and produced no output (stderr may have been suppressed with 2>/dev/null)'
               }
-              resolve({ error: `Command failed (exit ${code}):\n${errorDetail}` })
+              resolve({ error: `${_quietNote}Command failed (exit ${code}):\n${errorDetail}` })
             }
           })
           proc.on('error', (err) => {
@@ -2971,9 +3045,11 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
             // and reject anything that escapes the session cwd.
             let resolvedProjectDir = cwd
             if (typeof args.project_dir === 'string' && args.project_dir.trim()) {
-              const candidate = path.isAbsolute(args.project_dir)
-                ? path.normalize(args.project_dir)
-                : path.resolve(cwd, args.project_dir)
+              // Strip surrounding quotes the model sometimes includes.
+              const rawDir = args.project_dir.trim().replace(/^['"]|['"]$/g, '').trim()
+              const candidate = path.isAbsolute(rawDir)
+                ? path.normalize(rawDir)
+                : path.resolve(cwd, rawDir)
               const normalizedCwd = path.normalize(cwd)
               if (candidate !== normalizedCwd && !candidate.startsWith(normalizedCwd + path.sep)) {
                 return { error: `project_dir "${args.project_dir}" resolves outside the working directory (${cwd}). Use a path inside the project root.` }
@@ -6270,9 +6346,27 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           const cmd = fnArgs.command || ''
           const isCompileCmd = /\b(swiftc|swift\s+build|xcodebuild|kotlinc|javac|tsc|rustc|go\s+build|gcc|g\+\+|clang)\b/i.test(cmd)
           if (isCompileCmd) {
-            // Extract the primary source file from the command
-            const fileMatch = cmd.match(/\b(\S+\.(swift|kt|java|ts|rs|go|c|cpp|m))\b/)
-            const compileTarget = fileMatch ? fileMatch[1] : cmd.slice(0, 60)
+            // Key selection:
+            //  - xcodebuild: key on (project|workspace, scheme) so repeated
+            //    xcodebuild invocations on the same target collapse to one
+            //    counter even when the full command string varies.
+            //  - everything else: key on the primary source filename,
+            //    falling back to a command prefix.
+            let compileTarget
+            if (/\bxcodebuild\b/.test(cmd)) {
+              const projMatch = cmd.match(/-(?:project|workspace)\s+(?:"([^"]+)"|'([^']+)'|(\S+))/)
+              const schemeMatch = cmd.match(/-scheme\s+(?:"([^"]+)"|'([^']+)'|(\S+))/)
+              const proj = projMatch ? (projMatch[1] || projMatch[2] || projMatch[3]) : null
+              const scheme = schemeMatch ? (schemeMatch[1] || schemeMatch[2] || schemeMatch[3]) : null
+              if (proj || scheme) {
+                compileTarget = `xcodebuild:${proj || '?'}:${scheme || '?'}`
+              } else {
+                compileTarget = 'xcodebuild:' + cmd.slice(0, 60)
+              }
+            } else {
+              const fileMatch = cmd.match(/\b(\S+\.(swift|kt|java|ts|rs|go|c|cpp|m))\b/)
+              compileTarget = fileMatch ? fileMatch[1] : cmd.slice(0, 60)
+            }
             const hasError = /error:/i.test(content) || /exit.*[1-9]/.test(content) || /Command failed/i.test(content)
 
             if (hasError) {
