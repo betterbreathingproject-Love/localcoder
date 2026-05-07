@@ -48,6 +48,8 @@ xcodebuild -project <Project>.xcodeproj \
 
 - Use a device name from `xcrun simctl list devices available` — it must match exactly.
 - Use `OS=latest` unless a specific version is needed.
+- **Do not pass `-quiet`.** It suppresses `BUILD SUCCEEDED` along with the verbose log, leaving only warnings in stderr. Agents commonly misread that as a failure. If you need a shorter log, pipe through `| tail -50` instead.
+- For a generic simulator build (no specific device) use `-destination 'generic/platform=iOS Simulator'`.
 
 ## Common Pitfalls
 

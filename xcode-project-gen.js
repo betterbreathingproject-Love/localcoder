@@ -33,6 +33,23 @@ function pbxUUID(seed) {
     .slice(0, 24).toUpperCase()
 }
 
+// ── pbxproj value quoting ─────────────────────────────────────────────────────
+// The old-style NeXTSTEP plist format used by pbxproj accepts bare-word
+// identifiers only if they contain nothing but [A-Za-z0-9_.$/]. Any other
+// character — most commonly a space — requires double-quoted + backslash-
+// escaped form. Emitting an unquoted value with spaces causes Xcode to fail
+// with cryptic errors like "PBXGroup _setTarget: unrecognized selector" or
+// "JSON text did not start with array or object".
+function pbxQuote(value) {
+  if (value === undefined || value === null) return '""'
+  const str = String(value)
+  if (str === '') return '""'
+  // Safe characters for a bare word in a pbxproj plist.
+  if (/^[A-Za-z0-9_.$/]+$/.test(str)) return str
+  // Quote and escape backslashes and double-quotes.
+  return '"' + str.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
+}
+
 // ── File scanner ──────────────────────────────────────────────────────────────
 function scanSourceDir(sourceRoot) {
   const swift = []
@@ -220,7 +237,14 @@ function generateXcodeProject(opts = {}) {
     return { error: `No Swift files found in ${srcRoot}` }
   }
 
-  const bundleId = `${orgIdentifier}.${productName}`
+  // Sanitize the bundle identifier: Apple only allows alnum + '-' + '.'.
+  // Strip anything else (commonly spaces in productName).
+  const bundleSlug = productName
+    .replace(/[^A-Za-z0-9-.]/g, '')
+    .replace(/\.+/g, '.')
+    .replace(/^\.+|\.+$/g, '')
+    || 'app'
+  const bundleId = `${orgIdentifier}.${bundleSlug}`
 
   // ── Generate UUIDs for all objects ──────────────────────────────────
   const projectUUID = pbxUUID(`project:${productName}`)
@@ -381,7 +405,7 @@ function generateXcodeProject(opts = {}) {
       out += `\t\t\t\t${c},\n`
     }
     out += '\t\t\t);\n'
-    out += `\t\t\tpath = "${g.path}";\n`
+    out += `\t\t\tpath = ${pbxQuote(g.path)};\n`
     out += '\t\t\tsourceTree = "<group>";\n'
     out += '\t\t};\n'
   }
@@ -399,8 +423,8 @@ function generateXcodeProject(opts = {}) {
   out += '\t\t\t);\n'
   out += '\t\t\tbuildRules = (\n\t\t\t);\n'
   out += '\t\t\tdependencies = (\n\t\t\t);\n'
-  out += `\t\t\tname = ${productName};\n`
-  out += `\t\t\tproductName = ${productName};\n`
+  out += `\t\t\tname = ${pbxQuote(productName)};\n`
+  out += `\t\t\tproductName = ${pbxQuote(productName)};\n`
   out += `\t\t\tproductReference = ${productRefUUID} /* ${productName}${productExt} */;\n`
   out += `\t\t\tproductType = "${productType}";\n`
   out += '\t\t};\n'
@@ -494,24 +518,53 @@ function generateXcodeProject(opts = {}) {
   out += '\t\t\t};\n'
   out += `\t\t\tname = Release;\n`
   out += '\t\t};\n'
+  // Target-level build settings — shared between Debug and Release.
+  // The critical missing piece for iOS is SUPPORTED_PLATFORMS +
+  // TARGETED_DEVICE_FAMILY; without these, xcodebuild reports
+  // "Supported platforms for the buildables in the current scheme is empty"
+  // and refuses to build.
+  function renderTargetSettings() {
+    let s = ''
+    s += `\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n`
+    s += `\t\t\t\tASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;\n`
+    s += `\t\t\t\tCODE_SIGN_STYLE = Automatic;\n`
+    if (!isIOS) s += '\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;\n'
+    s += `\t\t\t\tCURRENT_PROJECT_VERSION = 1;\n`
+    if (teamId) s += `\t\t\t\tDEVELOPMENT_TEAM = ${teamId};\n`
+    s += '\t\t\t\tENABLE_PREVIEWS = YES;\n'
+    s += '\t\t\t\tGENERATE_INFOPLIST_FILE = YES;\n'
+    s += `\t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "";\n`
+    if (isIOS) {
+      s += '\t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;\n'
+      s += '\t\t\t\tINFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;\n'
+      s += '\t\t\t\tINFOPLIST_KEY_UILaunchScreen_Generation = YES;\n'
+      s += '\t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";\n'
+      s += '\t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";\n'
+    }
+    s += '\t\t\t\tLD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";\n'
+    s += `\t\t\t\t${deploymentTargetKey} = ${deploymentTarget};\n`
+    s += `\t\t\t\tMARKETING_VERSION = 1.0;\n`
+    s += `\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = ${pbxQuote(bundleId)};\n`
+    s += `\t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";\n`
+    s += `\t\t\t\tSDKROOT = ${sdkRoot};\n`
+    if (isIOS) {
+      s += '\t\t\t\tSUPPORTED_PLATFORMS = "iphoneos iphonesimulator";\n'
+      s += '\t\t\t\tSUPPORTS_MACCATALYST = NO;\n'
+      s += '\t\t\t\tSUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;\n'
+      s += '\t\t\t\tTARGETED_DEVICE_FAMILY = "1,2";\n'
+    } else {
+      s += '\t\t\t\tSUPPORTED_PLATFORMS = macosx;\n'
+    }
+    s += `\t\t\t\tSWIFT_EMIT_LOC_STRINGS = YES;\n`
+    s += `\t\t\t\tSWIFT_VERSION = 5.0;\n`
+    return s
+  }
+
   // Debug — target level
   out += `\t\t${configDebugTargetUUID} /* Debug */ = {\n`
   out += '\t\t\tisa = XCBuildConfiguration;\n'
   out += '\t\t\tbuildSettings = {\n'
-  out += `\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n`
-  out += `\t\t\t\tCODE_SIGN_STYLE = Automatic;\n`
-  out += '\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;\n'
-  out += `\t\t\t\tCURRENT_PROJECT_VERSION = 1;\n`
-  if (teamId) out += `\t\t\t\tDEVELOPMENT_TEAM = ${teamId};\n`
-  out += '\t\t\t\tENABLE_PREVIEWS = YES;\n'
-  out += '\t\t\t\tGENERATE_INFOPLIST_FILE = YES;\n'
-  out += `\t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "";\n`
-  out += `\t\t\t\t${deploymentTargetKey} = ${deploymentTarget};\n`
-  out += `\t\t\t\tMARKETING_VERSION = 1.0;\n`
-  out += `\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = "${bundleId}";\n`
-  out += `\t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";\n`
-  out += `\t\t\t\tSWIFT_EMIT_LOC_STRINGS = YES;\n`
-  out += `\t\t\t\tSWIFT_VERSION = 5.0;\n`
+  out += renderTargetSettings()
   out += '\t\t\t};\n'
   out += `\t\t\tname = Debug;\n`
   out += '\t\t};\n'
@@ -519,20 +572,7 @@ function generateXcodeProject(opts = {}) {
   out += `\t\t${configReleaseTargetUUID} /* Release */ = {\n`
   out += '\t\t\tisa = XCBuildConfiguration;\n'
   out += '\t\t\tbuildSettings = {\n'
-  out += `\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n`
-  out += `\t\t\t\tCODE_SIGN_STYLE = Automatic;\n`
-  out += '\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;\n'
-  out += `\t\t\t\tCURRENT_PROJECT_VERSION = 1;\n`
-  if (teamId) out += `\t\t\t\tDEVELOPMENT_TEAM = ${teamId};\n`
-  out += '\t\t\t\tENABLE_PREVIEWS = YES;\n'
-  out += '\t\t\t\tGENERATE_INFOPLIST_FILE = YES;\n'
-  out += `\t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "";\n`
-  out += `\t\t\t\t${deploymentTargetKey} = ${deploymentTarget};\n`
-  out += `\t\t\t\tMARKETING_VERSION = 1.0;\n`
-  out += `\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = "${bundleId}";\n`
-  out += `\t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";\n`
-  out += `\t\t\t\tSWIFT_EMIT_LOC_STRINGS = YES;\n`
-  out += `\t\t\t\tSWIFT_VERSION = 5.0;\n`
+  out += renderTargetSettings()
   out += '\t\t\t};\n'
   out += `\t\t\tname = Release;\n`
   out += '\t\t};\n'
@@ -585,15 +625,21 @@ function generateXcodeProject(opts = {}) {
     if (!fs.existsSync(contentsJson)) {
       fs.writeFileSync(contentsJson, '{\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n', 'utf-8')
     }
-    // AccentColor.colorset
+    // AccentColor.colorset — create if missing so the AppIcon build setting resolves.
     const accentDir = path.join(acPath, 'AccentColor.colorset')
-    if (fs.existsSync(accentDir) && !fs.existsSync(path.join(accentDir, 'Contents.json'))) {
+    fs.mkdirSync(accentDir, { recursive: true })
+    if (!fs.existsSync(path.join(accentDir, 'Contents.json'))) {
       fs.writeFileSync(path.join(accentDir, 'Contents.json'), '{\n  "colors" : [\n    {\n      "idiom" : "universal"\n    }\n  ],\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n', 'utf-8')
     }
-    // AppIcon.appiconset
+    // AppIcon.appiconset — always create. actool fails the build when
+    // ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon but no matching set exists.
     const iconDir = path.join(acPath, 'AppIcon.appiconset')
-    if (fs.existsSync(iconDir) && !fs.existsSync(path.join(iconDir, 'Contents.json'))) {
-      fs.writeFileSync(path.join(iconDir, 'Contents.json'), '{\n  "images" : [\n    {\n      "idiom" : "universal",\n      "platform" : "' + (isIOS ? 'ios' : 'macos') + '",\n      "size" : "1024x1024"\n    }\n  ],\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n', 'utf-8')
+    fs.mkdirSync(iconDir, { recursive: true })
+    if (!fs.existsSync(path.join(iconDir, 'Contents.json'))) {
+      const iconJson = isIOS
+        ? '{\n  "images" : [\n    {\n      "idiom" : "universal",\n      "platform" : "ios",\n      "size" : "1024x1024"\n    }\n  ],\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n'
+        : '{\n  "images" : [\n    {\n      "idiom" : "mac",\n      "scale" : "1x",\n      "size" : "16x16"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "2x",\n      "size" : "16x16"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "1x",\n      "size" : "32x32"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "2x",\n      "size" : "32x32"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "1x",\n      "size" : "128x128"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "2x",\n      "size" : "128x128"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "1x",\n      "size" : "256x256"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "2x",\n      "size" : "256x256"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "1x",\n      "size" : "512x512"\n    },\n    {\n      "idiom" : "mac",\n      "scale" : "2x",\n      "size" : "512x512"\n    }\n  ],\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n'
+      fs.writeFileSync(path.join(iconDir, 'Contents.json'), iconJson, 'utf-8')
     }
   }
 
