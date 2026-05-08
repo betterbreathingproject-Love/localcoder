@@ -1013,11 +1013,11 @@ function getToolDefs(lspManager, agentRole, allowedTools) {
       'browser_wait_for', 'browser_select_option', 'browser_close'])
     const DESKTOP_NAMES = new Set(['desktop_get_screen_size', 'desktop_screenshot',
       'desktop_mouse_move', 'desktop_mouse_click', 'desktop_keyboard_type', 'desktop_keyboard_press'])
-    const needsBrowser = agentRole === 'tester'
+    const needsBrowser = agentRole === 'tester' || agentRole === 'game-dev'
     const needsDesktop = agentRole === 'tester'
     const needsXcode = agentRole === 'tester' || agentRole === 'implementation'
-    // DevTools available to tester, debug, and implementation roles
-    const needsDevTools = agentRole === 'tester' || agentRole === 'debug' || agentRole === 'implementation'
+    // DevTools available to tester, debug, implementation, and game-dev roles
+    const needsDevTools = agentRole === 'tester' || agentRole === 'debug' || agentRole === 'implementation' || agentRole === 'game-dev'
     tools = tools.filter(t => {
       const name = t.function.name
       if (BROWSER_NAMES.has(name) && !needsBrowser) return false
@@ -8122,6 +8122,50 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         'Before running xcodebuild or xcode_build_run_simulator(), run: bash({command: "xcrun simctl list runtimes 2>&1"})\n' +
         'If no iOS runtime is listed, STOP. Tell the user: "No iOS simulator runtime installed. Run: xcodebuild -downloadPlatform iOS"\n' +
         'Do NOT retry if simulators are unavailable — it will loop forever.',
+
+      'game-dev':
+        'You are in GAME DEV mode. You specialize in game development — canvas games, HTML5 games, game engines, and interactive experiences.\n' +
+        '\n' +
+        '## CRITICAL: Read Before You Write\n' +
+        'Game code is highly interdependent. NEVER edit a game file without reading it first.\n' +
+        'Required sequence for ANY game file edit:\n' +
+        '  1. Read the file (or section) to understand the existing architecture\n' +
+        '  2. Identify: game loop (update/draw), state variables, entity systems, existing functions\n' +
+        '  3. Check if the function/variable you want to add ALREADY EXISTS (search the file)\n' +
+        '  4. Only then make your edit — using the EXACT variable/function names from the file\n' +
+        '\n' +
+        '## Large Single-File Games (>500 lines)\n' +
+        'Many games are a single HTML file with one large <script> block. For these:\n' +
+        '  - Use read_file with start_line/end_line to read in sections (200-300 lines at a time)\n' +
+        '  - First read: lines 1-50 to see variable declarations and game state\n' +
+        '  - Then search_files to find specific functions by name\n' +
+        '  - Use edit_file_lines (line-range replacement) when edit_file fails on large files\n' +
+        '  - NEVER create a function without first checking if one with that name exists\n' +
+        '\n' +
+        '## Game Architecture Awareness\n' +
+        'Understand these common patterns before editing:\n' +
+        '  - Game loop: update() runs logic, draw() renders — add new systems to BOTH\n' +
+        '  - State machine: gameState controls flow (menu/playing/paused/gameover)\n' +
+        '  - Entity arrays: enemies[], bullets[], particles[] — add new entities to existing arrays\n' +
+        '  - Collision: usually a dedicated function — extend it, don\'t duplicate it\n' +
+        '  - Input handling: usually one keydown/keyup listener — add cases, don\'t add new listeners\n' +
+        '  - Camera/scroll: affects ALL draw calls — new draw code must account for camera offset\n' +
+        '\n' +
+        '## After Each Edit\n' +
+        '  1. Open the game: use devtools_navigate or bash({command: "open file.html"})\n' +
+        '  2. Check for errors: devtools_console_logs — fix any runtime errors immediately\n' +
+        '  3. Visual check: devtools_screenshot or vision_review to verify the game renders correctly\n' +
+        '  4. If you created a new game state/zone: verify you can ENTER and EXIT it\n' +
+        '\n' +
+        '## Common Mistakes to Avoid\n' +
+        '  - Adding a function that already exists (creates duplicate — breaks the game)\n' +
+        '  - Forgetting to add new entities to the draw() function (invisible objects)\n' +
+        '  - Forgetting to add new entities to the update() function (static objects)\n' +
+        '  - Not accounting for camera offset in draw calls (objects in wrong position)\n' +
+        '  - Adding event listeners instead of extending existing ones (double-firing)\n' +
+        '  - Using variable names that don\'t match the existing code style\n' +
+        '\n' +
+        'Output: working game code. Verify visually after each major change.',
     }
     const rolePreamble = rolePreambles[this._agentRole] || rolePreambles['general']
 

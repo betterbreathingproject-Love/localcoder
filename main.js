@@ -365,6 +365,15 @@ agentPool.registerType({ name: 'general', systemPrompt: '', allowedTools: [
   'xcode_setup_project', 'xcode_discover_projects', 'xcode_build_simulator', 'xcode_build_run_simulator',
   'xcode_get_build_settings', 'xcode_open_simulator_window', 'xcode_snapshot_ui', 'xcode_screenshot_simulator',
 ], timeout: 1800000 }) // 30 min
+agentPool.registerType({ name: 'game-dev', systemPrompt: '', allowedTools: [
+  'read_file', 'read_files', 'write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'list_dir', 'bash', 'search_files', 'web_search', 'web_fetch',
+  // DevTools — essential for seeing runtime errors in canvas/HTML games
+  'devtools_navigate', 'devtools_console_logs', 'devtools_screenshot', 'devtools_evaluate', 'devtools_network_errors',
+  // Browser — visual verification of game rendering
+  'browser_navigate', 'browser_screenshot', 'browser_evaluate',
+  // Vision — review game visuals
+  'vision_review',
+], timeout: 1800000 }) // 30 min
 
 // ── shared accessors for IPC modules ──────────────────────────────────────────
 const ctx = {

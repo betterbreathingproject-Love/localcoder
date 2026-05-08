@@ -34,6 +34,7 @@ const CATEGORY_KEYWORDS = {
   'debug': ['debug', 'debugg', 'diagnose', 'trace', 'stack trace', 'error', 'exception', 'crash', 'failing', 'broken', 'not working', 'reproduce', 'root cause', 'why is', 'why does', "doesn't work", "not loading", "won't load", "fails to", "not starting"],
   'tester': ['test', 'testing', 'verify', 'check', 'playwright', 'browser test', 'e2e', 'end to end', 'screenshot', 'click', 'navigate', 'ui test', 'visual test', 'does it work', 'validate', 'qa', 'acceptance test', 'xcode test', 'xctest', 'simulator', 'ios test', 'unit test'],
   'implementation': ['implement', 'code', 'build', 'create', 'write', 'develop', 'refactor', 'fix', 'bug', 'add', 'update', 'modify', 'change', 'set up', 'configure', 'install', 'upgrade', 'migrate', 'integrate', 'wire', 'connect', 'replace', 'rewrite', 'patch', 'extend', 'enable', 'disable', 'render', 'display', 'handle', 'parse', 'generate', 'emit', 'register', 'xcode', 'swift', 'swiftui', 'xcodebuild', 'cocoapods', 'spm', 'swift package'],
+  'game-dev': ['game', 'sprite', 'canvas', 'player', 'enemy', 'collision', 'level', 'tile', 'tilemap', 'animation', 'frame', 'fps', 'game loop', 'physics', 'hitbox', 'power-up', 'powerup', 'bonus', 'score', 'lives', 'health', 'spawn', 'projectile', 'bullet', 'platform', 'platformer', 'mario', 'jump', 'gravity', 'velocity', 'parallax', 'particle', 'explosion', 'boss', 'wave', 'stage', 'world', 'camera scroll', 'viewport', 'spritesheet', 'pixel', 'retro', 'arcade', 'side-scroller', 'top-down', 'rpg', 'inventory', 'quest', 'npc', 'dialogue', 'cutscene', 'game over', 'respawn', 'checkpoint', 'save state', 'high score', 'leaderboard', 'multiplayer', 'lobby', 'matchmaking', 'game state', 'state machine', 'finite state', 'entity', 'component', 'ecs', 'scene', 'renderer', 'webgl', 'pixi', 'phaser', 'three.js', 'godot', 'unity', 'coin', 'coins', 'pipe', 'pipes', 'zone', 'warp', 'teleport', 'portal', 'dungeon', 'maze', 'obstacle', 'hazard', 'lava', 'spike', 'trap', 'shield', 'weapon', 'sword', 'arrow', 'magic', 'mana', 'xp', 'level up', 'skill tree', 'loot', 'drop', 'crafting', 'mining', 'farming', 'tower defense', 'wave defense', 'survival', 'roguelike', 'procedural', 'random generation', 'seed', 'biome', 'terrain', 'pathfinding', 'ai behavior', 'steering', 'flocking', 'a-star', 'navmesh'],
 };
 
 // --- AgentPool ---
@@ -181,6 +182,9 @@ class AgentPool extends EventEmitter {
             bestMatch = typeConfig;
           } else if (score === bestScore && score > 0 && typeName === 'debug') {
             // debug wins ties — it's more specific than implementation/explore
+            bestMatch = typeConfig;
+          } else if (score === bestScore && score > 0 && typeName === 'game-dev' && bestMatch?.name === 'implementation') {
+            // game-dev wins ties against implementation — game tasks often contain generic words like "add"
             bestMatch = typeConfig;
           }
         }
