@@ -29,6 +29,8 @@ let constrainedDecoder = null
 try { constrainedDecoder = require('./constrained-decoder') } catch (_) { /* optional */ }
 let PostWriteCache = null
 try { ({ PostWriteCache } = require('./post-write-cache')) } catch (_) { /* optional */ }
+let postWriteFixer = null
+try { postWriteFixer = require('./post-write-fixer') } catch (_) { /* optional */ }
 let shrinkOlderToolResults = null
 try { ({ shrinkOlderToolResults } = require('./tool-result-shrinker')) } catch (_) { /* optional */ }
 let systemPromptCache = null
@@ -6217,22 +6219,43 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           content = speculativeMsg + content
         }
 
-        // ── Post-write cache: stash content for fast re-read ────────────
-        // Record every successful write so the agent can re-read without
-        // hitting disk + re-prefilling. Independent of LSP availability.
-        if ((fnName === 'write_file' || fnName === 'edit_file') && !isError && this._postWriteCache && fnArgs.path) {
-          try {
-            const absPath = path.resolve(cwd, fnArgs.path)
-            if (fnName === 'write_file' && typeof fnArgs.content === 'string') {
-              this._postWriteCache.recordWrite(absPath, fnArgs.content, turn)
-            } else if (fnName === 'edit_file') {
-              // For edit_file, read back the post-edit content
-              try {
-                const after = fs.readFileSync(absPath, 'utf-8')
-                this._postWriteCache.recordWrite(absPath, after, turn)
-              } catch { /* skip caching if read fails */ }
-            }
-          } catch { /* non-fatal */ }
+        // ── Post-write: fix-then-cache pipeline ─────────────────────────
+        // 1. Auto-fixer runs (use strict, trailing newline, eslint --fix)
+        // 2. Cache records the FIXED content (so re-reads stay consistent)
+        // Order matters: agent's mental model matches what's on disk.
+        if ((fnName === 'write_file' || fnName === 'edit_file') && !isError && fnArgs.path) {
+          const absPath = path.resolve(cwd, fnArgs.path)
+
+          // Step 1: Auto-fix trivial issues silently
+          let fixedContent = null
+          if (postWriteFixer) {
+            try {
+              const fixResult = postWriteFixer.fixAfterWrite(absPath, cwd)
+              if (fixResult.fixed) {
+                fixedContent = fixResult.fixedContent
+                this.send('qwen-event', { type: 'system', subtype: 'debug',
+                  data: `🔧 auto-fixed: ${fixResult.fixes.join(', ')} → ${fnArgs.path}` })
+              }
+            } catch { /* non-fatal — fixer failure doesn't block the pipeline */ }
+          }
+
+          // Step 2: Cache the final on-disk content (post-fix)
+          if (this._postWriteCache) {
+            try {
+              if (fixedContent != null) {
+                // Fixer ran — cache the fixed version
+                this._postWriteCache.recordWrite(absPath, fixedContent, turn)
+              } else if (fnName === 'write_file' && typeof fnArgs.content === 'string') {
+                this._postWriteCache.recordWrite(absPath, fnArgs.content, turn)
+              } else if (fnName === 'edit_file') {
+                // For edit_file, read back the post-edit content
+                try {
+                  const after = fs.readFileSync(absPath, 'utf-8')
+                  this._postWriteCache.recordWrite(absPath, after, turn)
+                } catch { /* skip caching if read fails */ }
+              }
+            } catch { /* non-fatal */ }
+          }
         }
 
         // ── Performance: deferred post-edit diagnostics ─────────────────────
