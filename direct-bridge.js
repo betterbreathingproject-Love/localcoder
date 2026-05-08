@@ -4117,6 +4117,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
     let consecutivePlanningNudges = 0  // Track how many times we've nudged for planning-only responses
     let _annotationNudgeCount = 0  // Track consecutive hallucinated-annotation nudges — cap to prevent infinite loop
     let _lastTodos = null  // Track the latest todo list for completion checking
+    let _todoErrorCount = 0  // Consecutive errors while a todo is in_progress — triggers nudge
+    let _todoErrorTurnStart = -1  // Turn when current in_progress todo started accumulating errors
     let _agentNotes = null  // Persistent thinking notes — survive compaction, re-injected after each compact
     // Also stored on instance so interrupt() can access it for session resume
     this._lastAgentNotes = null
@@ -5816,9 +5818,13 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         if (fnName === 'update_todos' && Array.isArray(fnArgs.todos)) {
           _bootstrapDone = true
           _lastTodos = fnArgs.todos || null
+          _todoErrorCount = 0  // Reset error tracking on manual todo update
+          _todoErrorTurnStart = -1
         }
         if (fnName === 'edit_todos') {
           _bootstrapDone = true
+          _todoErrorCount = 0  // Reset error tracking on manual todo edit
+          _todoErrorTurnStart = -1
           // Apply the edit operations to _lastTodos so completion checking stays accurate
           if (_lastTodos) {
             let todos = [..._lastTodos]
@@ -6299,8 +6305,11 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                 const dupWarnings = dupResult.duplicates
                   .map(d => `  • "${d.name}" declared on lines: ${d.lines.join(', ')}`)
                   .join('\n')
+                const todoHint = _lastTodos && _lastTodos.find(t => t.status === 'in_progress')
+                  ? ' Fix this NOW as part of your current task — do NOT move to the next todo until duplicates are resolved.'
+                  : ''
                 const dupMsg = `\n\n⚠️ DUPLICATE SYMBOLS DETECTED in ${fnArgs.path}:\n${dupWarnings}\n` +
-                  `This will cause runtime errors. You must remove the duplicate declaration(s) immediately.`
+                  `This will cause runtime errors. You must remove the duplicate declaration(s) immediately.${todoHint}`
                 content = (content || '') + dupMsg
                 this.send('qwen-event', { type: 'system', subtype: 'warning',
                   data: `⚠️ Duplicate symbols in ${fnArgs.path}: ${dupResult.duplicates.map(d => d.name).join(', ')}` })
@@ -6313,7 +6322,10 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             try {
               const syntaxErr = postWriteFixer.checkSyntax(absPath)
               if (syntaxErr) {
-                const syntaxMsg = `\n\n❌ SYNTAX ERROR after write: ${syntaxErr}\nFix this before proceeding.`
+                const todoHint = _lastTodos && _lastTodos.find(t => t.status === 'in_progress')
+                  ? ' This counts as a failed edit — fix the syntax error before proceeding with your current todo.'
+                  : ''
+                const syntaxMsg = `\n\n❌ SYNTAX ERROR after write: ${syntaxErr}\nFix this before proceeding.${todoHint}`
                 content = (content || '') + syntaxMsg
                 this.send('qwen-event', { type: 'system', subtype: 'warning',
                   data: `❌ Syntax error in ${fnArgs.path}: ${syntaxErr}` })
@@ -6898,6 +6910,8 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         // This eliminates the need for the agent to waste a turn calling edit_todos.
         const _WRITE_TOOLS_AUTO = new Set(['write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'bash'])
         if (!isError && _lastTodos && _WRITE_TOOLS_AUTO.has(fnName)) {
+          // Reset error counter on successful write — the agent recovered
+          _todoErrorCount = 0
           const inProgressIdx = _lastTodos.findIndex(t => t.status === 'in_progress')
           if (inProgressIdx !== -1) {
             // For bash: only auto-advance if it looks like a verification step
@@ -6921,6 +6935,47 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                 if (nextPending) nextPending.status = 'in_progress'
                 this.send('qwen-event', { type: 'todo-watch', todos: _lastTodos })
               }
+            }
+          }
+        }
+
+        // ── Track errors on in_progress todos and nudge recovery ──────────
+        // When write tools fail repeatedly while a todo is in_progress, the agent
+        // is stuck. Inject a targeted nudge to help it recover rather than loop.
+        if (isError && _lastTodos && _WRITE_TOOLS_AUTO.has(fnName)) {
+          const inProgressTodo = _lastTodos.find(t => t.status === 'in_progress')
+          if (inProgressTodo) {
+            _todoErrorCount++
+            if (_todoErrorTurnStart === -1) _todoErrorTurnStart = turn
+
+            // After 3 consecutive errors on the same todo, inject recovery guidance
+            if (_todoErrorCount === 3) {
+              const errorSnippet = (content || '').slice(0, 200)
+              messages.push({
+                role: 'system',
+                content: `⚠️ TODO STUCK: "${inProgressTodo.content || inProgressTodo.text}" has failed ${_todoErrorCount} times.\n` +
+                  `Last error: ${errorSnippet}\n\n` +
+                  `Recovery steps:\n` +
+                  `1. STOP and re-read the target file to get the current content\n` +
+                  `2. Use the EXACT text from the file as old_string\n` +
+                  `3. If the file is large, use read_file with start_line/end_line to read just the section you need\n` +
+                  `Do NOT guess file content — read it first, then edit.`,
+              })
+              this.send('qwen-event', { type: 'system', subtype: 'warning',
+                data: `⚠️ Todo "${(inProgressTodo.content || '').slice(0, 40)}" stuck after ${_todoErrorCount} errors` })
+            } else if (_todoErrorCount >= 5) {
+              // After 5 errors, suggest a different approach entirely
+              messages.push({
+                role: 'system',
+                content: `🚫 TODO BLOCKED: "${inProgressTodo.content || inProgressTodo.text}" has failed ${_todoErrorCount} times across ${turn - _todoErrorTurnStart} turns.\n` +
+                  `Your current approach is not working. You MUST try something different:\n` +
+                  `- If edit_file keeps failing: use write_file to rewrite the entire file (or the relevant section)\n` +
+                  `- If the file is too large to rewrite: use search_files to find the exact line, then edit_file_lines with start_line/end_line\n` +
+                  `- If you're fundamentally stuck: call ask_user to get help\n` +
+                  `Do NOT repeat the same failing approach.`,
+              })
+              // Reset counter so we don't spam every turn
+              _todoErrorCount = 3
             }
           }
         }
