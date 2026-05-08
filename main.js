@@ -2,6 +2,13 @@ const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron')
 const path = require('path')
 const os = require('os')
 const fs = require('node:fs')
+
+// ── V8 stability: reduce GC pressure on long-running sessions ─────────────────
+// Electron 41 + cppgc can crash after ~1hr of heavy agent use due to GC
+// heap fragmentation. Increasing the old-space limit and enabling incremental
+// marking reduces the likelihood of hitting internal V8 assertions.
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096 --expose-gc')
+
 const { DirectBridge, WindowSink, WindowInputRequester, sinkBus } = require('./direct-bridge')
 const { AgentPool, CATEGORY_KEYWORDS } = require('./agent-pool')
 const { loadSteeringDocs, formatSteeringForPrompt } = require('./steering-loader')
@@ -650,6 +657,10 @@ ipcMain.handle('qwen-run', async (_, { prompt, cwd, permissionMode, agentRole, m
     if (data && (data.type === 'session-end' || data.type === 'error' || data.type === 'result')) {
       _serverQueue._agentRunning = false
       sinkBus.off('qwen-event', _releaseOnEnd)
+      // Nudge V8 GC after agent run to prevent heap fragmentation over long sessions
+      if (typeof global.gc === 'function') {
+        setTimeout(() => { try { global.gc() } catch {} }, 2000)
+      }
       // Drain any queued requests now that the agent is done
       if (_serverQueue._waiters && _serverQueue._waiters.length > 0) {
         const next = _serverQueue._waiters.shift()
