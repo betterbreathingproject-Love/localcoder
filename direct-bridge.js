@@ -1660,6 +1660,25 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
     return chromeDevTools.executeDevToolsTool(name, args)
   }
 
+  // Route raw MCP tool names to devtools_* equivalents — agents sometimes call
+  // the underlying MCP tool name (e.g. 'console_get_logs') instead of the
+  // agent-facing name ('devtools_console_logs'). Map them transparently.
+  if (chromeDevTools) {
+    const _REVERSE_DEVTOOLS_MAP = {
+      console_get_logs: 'devtools_console_logs',
+      network_get_failed_requests: 'devtools_network_errors',
+      navigate: 'devtools_navigate',
+      screenshot: 'devtools_screenshot',
+      javascript_evaluate: 'devtools_evaluate',
+      css_get_computed_styles: 'devtools_get_styles',
+      performance_start_trace: 'devtools_performance_trace',
+      interaction_click: 'devtools_click',
+    }
+    if (_REVERSE_DEVTOOLS_MAP[name]) {
+      return chromeDevTools.executeDevToolsTool(_REVERSE_DEVTOOLS_MAP[name], args)
+    }
+  }
+
   // Route browser_* tools to the playwright instance
   if (name.startsWith('browser_') && browserInstance) {
     return browserInstance.execute(name, args)
@@ -3084,6 +3103,15 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         // Route xcode_* tools to XcodeBuildMCP
         if (name.startsWith('xcode_') && xcodeTool) {
           return xcodeTool.executeXcodeTool(name, args, cwd)
+        }
+        // Catch devtools_* calls when chrome-devtools-mcp isn't loaded
+        if (name.startsWith('devtools_')) {
+          return { error: `Chrome DevTools MCP is not available. Use browser_screenshot (Playwright) instead for visual checks, or bash to run the app and check console output.` }
+        }
+        // Catch raw MCP devtools tool names when module isn't loaded
+        const _RAW_DEVTOOLS_NAMES = new Set(['console_get_logs', 'network_get_failed_requests', 'navigate', 'screenshot', 'javascript_evaluate', 'css_get_computed_styles', 'performance_start_trace', 'interaction_click'])
+        if (_RAW_DEVTOOLS_NAMES.has(name)) {
+          return { error: `"${name}" is a Chrome DevTools MCP tool but the DevTools module is not available. Use the prefixed name (devtools_${name === 'screenshot' ? 'screenshot' : name}) or use Playwright tools (browser_screenshot, browser_navigate) instead.` }
         }
         return { error: `Unknown tool: ${name}` }
       }

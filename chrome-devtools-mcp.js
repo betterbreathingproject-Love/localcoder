@@ -320,7 +320,15 @@ class ChromeDevToolsMCPClient extends EventEmitter {
    */
   async callTool(toolName, args, timeoutMs = 30000) {
     if (this._status !== 'ready') {
-      const start = await this.start()
+      // Try starting with one retry on failure
+      let start = await this.start()
+      if (!start.ok && this._status !== 'starting') {
+        // Reset and retry once — transient failures (port busy, slow npx download)
+        this._status = 'stopped'
+        this._errorMsg = null
+        await new Promise(r => setTimeout(r, 1000))
+        start = await this.start()
+      }
       if (!start.ok) throw new Error(start.error)
     }
 
@@ -375,7 +383,7 @@ function getClient() {
 async function executeDevToolsTool(name, args) {
   const mcpToolName = TOOL_NAME_MAP[name]
   if (!mcpToolName) {
-    return { error: `Unknown devtools tool: ${name}` }
+    return { error: `Unknown devtools tool: ${name}. Available: ${Object.keys(TOOL_NAME_MAP).join(', ')}` }
   }
 
   const client = getClient()
@@ -391,7 +399,15 @@ async function executeDevToolsTool(name, args) {
     }
     return { result: JSON.stringify(result) }
   } catch (err) {
-    return { error: `DevTools MCP error: ${err.message}` }
+    const msg = err.message || String(err)
+    // Provide actionable alternatives when DevTools fails
+    if (msg.includes('not found') || msg.includes('timed out') || msg.includes('exited')) {
+      return { error: `DevTools MCP error: ${msg}. Chrome DevTools MCP may not be running. Alternatives:\n` +
+        `- Use browser_navigate + browser_screenshot (Playwright) for visual checks\n` +
+        `- Use bash to open the file in a browser: open "file.html"\n` +
+        `- Use bash with node to check JS syntax: node -c "file.js"` }
+    }
+    return { error: `DevTools MCP error: ${msg}` }
   }
 }
 
