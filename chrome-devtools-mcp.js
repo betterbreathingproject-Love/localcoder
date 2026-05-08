@@ -209,7 +209,7 @@ class ChromeDevToolsMCPClient extends EventEmitter {
 
     return new Promise((resolve) => {
       try {
-        this._proc = spawn(npx, ['chrome-devtools-mcp@latest'], {
+        this._proc = spawn(npx, ['chrome-devtools-mcp@latest', '--isolated'], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: {
             ...process.env,
@@ -356,6 +356,13 @@ class ChromeDevToolsMCPClient extends EventEmitter {
     }
     this._status = 'stopped'
     this._ready = false
+    // Clean up stale profile lock so next session doesn't hit "already running"
+    try {
+      const lockPath = require('path').join(require('os').homedir(), '.cache', 'chrome-devtools-mcp', 'chrome-profile', 'SingletonLock')
+      if (require('fs').existsSync(lockPath)) {
+        require('fs').unlinkSync(lockPath)
+      }
+    } catch { /* ignore */ }
   }
 
   getStatus() {
@@ -413,6 +420,38 @@ async function executeDevToolsTool(name, args) {
         .filter(c => c.type === 'text')
         .map(c => c.text)
         .join('\n')
+
+      // Detect "browser already running" error in the tool result
+      if (text.includes('browser is already running') || text.includes('already running for')) {
+        // Try to kill the stale Chrome profile lock and retry once
+        try {
+          const { execSync: _exec } = require('child_process')
+          const lockDir = require('path').join(require('os').homedir(), '.cache', 'chrome-devtools-mcp', 'chrome-profile', 'SingletonLock')
+          _exec(`rm -f "${lockDir}" 2>/dev/null`, { timeout: 2000 })
+        } catch { /* ignore */ }
+
+        // Retry the tool call once
+        try {
+          const retryResult = await client.callTool(mcpToolName, mcpArgs)
+          if (retryResult && retryResult.content && Array.isArray(retryResult.content)) {
+            const retryText = retryResult.content
+              .filter(c => c.type === 'text')
+              .map(c => c.text)
+              .join('\n')
+            if (!retryText.includes('browser is already running') && !retryText.includes('already running for')) {
+              return { result: retryText || '(no output)' }
+            }
+          }
+        } catch { /* retry failed too */ }
+
+        // If retry also failed, give actionable guidance
+        return { error: `Chrome DevTools MCP: browser profile is locked by another process. ` +
+          `This happens when Chrome was not closed cleanly. Workarounds:\n` +
+          `- Use bash({command: "pkill -f chrome-devtools-mcp"}) to kill stale processes, then retry\n` +
+          `- Use browser_navigate + browser_screenshot (Playwright) instead — it uses its own browser\n` +
+          `- Use bash({command: "open file.html"}) to open in the user's browser manually` }
+      }
+
       return { result: text || '(no output)' }
     }
     return { result: JSON.stringify(result) }
@@ -424,6 +463,9 @@ async function executeDevToolsTool(name, args) {
         `- Use browser_navigate + browser_screenshot (Playwright) for visual checks\n` +
         `- Use bash to open the file in a browser: open "file.html"\n` +
         `- Use bash with node to check JS syntax: node -c "file.js"` }
+    }
+    if (msg.includes('already running') || msg.includes('browser is already')) {
+      return { error: `Chrome DevTools MCP: browser profile locked. Use bash({command: "pkill -f chrome-devtools-mcp"}) then retry, or use Playwright tools (browser_navigate, browser_screenshot) instead.` }
     }
     return { error: `DevTools MCP error: ${msg}` }
   }
