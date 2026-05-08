@@ -5057,7 +5057,9 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         const planningPatterns = /\b(let me|i('ll| will)|let's|i need to|i should|first.*then|i'm going to|i'll start|starting now)\b/i
         if (text && text.length > 50 && planningPatterns.test(text) && turn < maxTurns - 1) {
           // On turn 0, only nudge if the text is clearly planning (not just a brief answer)
-          if (turn === 0 && text.length < 200 && !text.includes('Let me')) {
+          // UNLESS the agent is in a task-oriented role — then always nudge.
+          const _isTaskOriented = this._agentRole && this._agentRole !== 'general' && this._agentRole !== 'explore'
+          if (turn === 0 && text.length < 200 && !text.includes('Let me') && !_isTaskOriented) {
             // Short acknowledgment on turn 0 — let it through as final response
           } else {
           consecutivePlanningNudges++
@@ -5148,16 +5150,29 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
 
         // Exception: if this is a simple Q&A (no tools ever used, short answer),
         // allow it through as a final response.
+        // BUT: if the response contains planning language ("I'll", "let me",
+        // "first", etc.) the model intends to act — nudge it to use tools
+        // instead of stopping prematurely. This catches the case where
+        // speculative decoding or other factors cause the model to emit only
+        // a planning sentence without following through with a tool call.
         const hasToolHistory = messages.some(m => m.role === 'tool')
         if (!hasToolHistory && turn === 0) {
-          // Pure Q&A — no tools used at all, first turn. Let it through.
-          this.send('qwen-event', {
-            type: 'result',
-            subtype: 'success',
-            is_error: false,
-            result: text,
-          })
-          return
+          const planningRe = /\b(i('ll| will)|let me|let's|i need to|i should|first.*then|i'm going to|i'll start|starting now|here's what|here is what)\b/i
+          const isPlanning = text && text.length > 10 && planningRe.test(text)
+          const isTaskRole = this._agentRole && this._agentRole !== 'general' && this._agentRole !== 'explore'
+          if (!isPlanning && !isTaskRole) {
+            // Pure Q&A — no tools used at all, first turn, no planning intent.
+            this.send('qwen-event', {
+              type: 'result',
+              subtype: 'success',
+              is_error: false,
+              result: text,
+            })
+            return
+          }
+          // Model described its plan but didn't act — fall through to the
+          // nudge logic below which will push it to use tools.
+          this.send('qwen-event', { type: 'system', subtype: 'debug', data: 'Turn 0 text-only with planning intent — nudging to use tools' })
         }
 
         // Check incomplete todos
