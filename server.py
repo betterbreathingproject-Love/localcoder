@@ -59,6 +59,20 @@ _num_draft_tokens = 4        # sweet-spot for Qwen3.5 0.8B → 35B on Apple Sili
 # None = disabled (default, full precision).
 _kv_bits: int | None = None  # 4 | 8 | None
 
+# ── Session KV cache (optional) ───────────────────────────────────────────
+# Keeps the previous request's KV cache in-memory and reuses it across turns
+# when prompts share a long common prefix. This is the killer optimization
+# for agent workflows where each turn sends the full conversation.
+_session_kv_cache = None
+try:
+    # Hyphenated filename requires importlib, same as memory-bridge
+    _session_kv_cache_mod = importlib.import_module("session-kv-cache")
+    _session_kv_cache = _session_kv_cache_mod.SessionKVCache(min_match_tokens=256)
+    print(f"[session-kv-cache] Session-level KV cache enabled", file=sys.stderr)
+except Exception as _e:
+    print(f"[session-kv-cache] Disabled ({_e})", file=sys.stderr)
+    _session_kv_cache = None
+
 # ── prefix cache state ────────────────────────────────────────────────────────
 # After model load we prefill the system prompt once and save the KV state to
 # disk (~/.qwencoder/cache/<model_key>-sysprompt.safetensors).
@@ -1546,6 +1560,57 @@ async def admin_prefix_cache_status():
     }
 
 
+@app.get("/admin/session-cache")
+async def admin_session_cache_status():
+    """Return session-level KV cache statistics (turn-to-turn prefix reuse)."""
+    if _session_kv_cache is None:
+        return {"enabled": False, "reason": "module not loaded"}
+    return {"enabled": True, **_session_kv_cache.stats()}
+
+
+@app.post("/admin/session-cache/invalidate")
+async def admin_session_cache_invalidate():
+    """Force clear the session KV cache (e.g. after model changes)."""
+    if _session_kv_cache is None:
+        return {"status": "noop", "reason": "module not loaded"}
+    _session_kv_cache.invalidate()
+    return {"status": "invalidated"}
+
+
+@app.get("/admin/session-cache/diagnose")
+async def admin_session_cache_diagnose():
+    """Diagnose why the session cache isn't hitting."""
+    if _model is None:
+        return {"error": "no model loaded"}
+    if _session_kv_cache is None:
+        return {"error": "module not loaded"}
+
+    import importlib
+    cache_mod = importlib.import_module("mlx_lm.models.cache")
+
+    try:
+        fresh_cache = cache_mod.make_prompt_cache(_model)
+        can_trim = cache_mod.can_trim_prompt_cache(fresh_cache)
+        layer_types = []
+        for i, c in enumerate(fresh_cache):
+            layer_types.append({
+                "idx": i,
+                "type": type(c).__name__,
+                "is_trimmable": hasattr(c, 'is_trimmable') and c.is_trimmable() if hasattr(c, 'is_trimmable') else False,
+            })
+        return {
+            "model_id": _model_id,
+            "num_layers": len(fresh_cache),
+            "can_trim_overall": can_trim,
+            "first_5_layers": layer_types[:5],
+            "all_trimmable": all(l["is_trimmable"] for l in layer_types),
+            "trimmable_count": sum(1 for l in layer_types if l["is_trimmable"]),
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
 # ── benchmark ─────────────────────────────────────────────────────────────────
 BENCHMARK_PROMPT = (
     "You are a helpful coding assistant. Explain step by step how to implement "
@@ -1975,7 +2040,35 @@ async def chat_completions(req: ChatRequest):
         # Only applies to text-only models with a matching cached system prompt.
         _active_prefix_cache = None
         _prompt_for_inference = prompt  # may be replaced with delta below
-        if not _model_is_vision and _prefix_cache_enabled and _prefix_cache_file and _prefix_cache_prompt:
+        _session_cache_hit = False  # tracks whether we used session cache
+        _session_prompt_tokens: list[int] = []  # tokenized full prompt, for save() after generation
+
+        # ── Session KV cache (turn-to-turn) — check BEFORE disk prefix cache ─
+        # This is the big win: if the previous request's cache is still in
+        # memory and this request shares a long prefix, reuse it and only
+        # prefill the delta. Typical savings: 25k/27k tokens skipped per turn.
+        if not _model_is_vision and _session_kv_cache is not None:
+            try:
+                tok = _processor if not hasattr(_processor, 'tokenizer') else _processor.tokenizer
+                # mlx_lm tokenizers: tokenizer.encode returns list[int]
+                _session_prompt_tokens = tok.encode(prompt) if hasattr(tok, 'encode') else list(tok(prompt))
+                hit = _session_kv_cache.try_match(_session_prompt_tokens, model_id=_model_id or "")
+                if hit:
+                    # Use the trimmed cache. Pass delta tokens as input.
+                    _active_prefix_cache = hit["cache"]
+                    # stream_generate accepts token IDs via a list input
+                    _prompt_for_inference = hit["delta_tokens"]
+                    kwargs['prompt_cache'] = _active_prefix_cache
+                    _session_cache_hit = True
+                    print(f"[session-kv-cache] Reusing {hit['prefix_len']} cached tokens, "
+                          f"delta={len(hit['delta_tokens'])} tokens (saved ~"
+                          f"{(hit['prefix_len'] * 1.0 / 1000):.1f}s at 1000 tok/s prefill)",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[session-kv-cache] Lookup failed (non-fatal): {e}", file=sys.stderr)
+
+        # Fall back to disk prefix cache (system prompt only) if no session hit
+        if not _session_cache_hit and not _model_is_vision and _prefix_cache_enabled and _prefix_cache_file and _prefix_cache_prompt:
             sys_prompt_text = get_system_prompt(req.messages)
             if sys_prompt_text and _prefix_cache_prompt == sys_prompt_text:
                 # Build the rendered system prompt prefix as it appears in the
@@ -1990,6 +2083,22 @@ async def chat_completions(req: ChatRequest):
                         kwargs['prompt_cache'] = _active_prefix_cache
                         print(f"[prefix-cache] Active: {len(prompt) - len(delta)} chars skipped, "
                               f"delta={len(delta)} chars", file=sys.stderr)
+
+        # ── Ensure a cache exists so we can save it for next turn ──────────
+        # If neither session nor disk prefix caches produced one, create a
+        # fresh cache. This lets us save it AFTER generation for reuse next turn.
+        # Skip if the architecture is known to be non-trimmable (hybrid models).
+        _sess_stats = _session_kv_cache.stats() if _session_kv_cache else None
+        _arch_supports_trim = _sess_stats is None or not _sess_stats.get('arch_checked') or _sess_stats.get('arch_trimmable')
+        if not _model_is_vision and _session_kv_cache is not None and 'prompt_cache' not in kwargs and _arch_supports_trim:
+            try:
+                from mlx_lm.models.cache import make_prompt_cache as _mkpc
+                _fresh_cache = _mkpc(_model)
+                kwargs['prompt_cache'] = _fresh_cache
+                print(f"[session-kv-cache] Full prefill (no prefix match) — cache will be saved for next turn",
+                      file=sys.stderr)
+            except Exception as _e:
+                print(f"[session-kv-cache] Fresh cache init failed (non-fatal): {_e}", file=sys.stderr)
 
         # Clear cache before large prompts (>50k chars) to maximize available memory
         if len(prompt) > 50000:
@@ -2052,6 +2161,36 @@ async def chat_completions(req: ChatRequest):
                             last_result = chunk
                         if not _cancelled.is_set() and last_result and hasattr(last_result, 'prompt_tps'):
                             loop.call_soon_threadsafe(queue.put_nowait, ("stats", last_result))
+
+                        # ── Save session KV cache for next turn ──────────────
+                        # After generation completes, persist the cache state
+                        # so the next request can reuse whatever prefix matches.
+                        # We save the cache used during inference, which now
+                        # contains state for: [full prompt tokens] + [generated tokens].
+                        if not _cancelled.is_set() and _session_kv_cache is not None:
+                            try:
+                                # If we hit, the cache contains prefix + delta + generated.
+                                # If we missed, caller may not have set a cache;
+                                # check kwargs.
+                                cache_state = kwargs.get('prompt_cache')
+                                if cache_state is not None and _session_prompt_tokens:
+                                    # Re-tokenize the generated text + append to prompt tokens
+                                    try:
+                                        gen_text = ''.join(full_text_parts) if 'full_text_parts' in dir() else ''
+                                    except Exception:
+                                        gen_text = ''
+                                    # For safety, just save the prompt tokens — we don't
+                                    # strictly need the generated tokens in the cache for
+                                    # the next turn's prefix match to work. The next
+                                    # request will include the assistant response as part
+                                    # of its full prompt, and matching will naturally
+                                    # align up to that point.
+                                    _session_kv_cache.save(_session_prompt_tokens, cache_state,
+                                                           model_id=_model_id or "")
+                                    if not _session_cache_hit:
+                                        _session_kv_cache.record_full_prefill()
+                            except Exception as _e:
+                                print(f"[session-kv-cache] Save failed (non-fatal): {_e}", file=sys.stderr)
                     except Exception as e:
                         if _cancelled.is_set():
                             print(f"[server] Inference interrupted (client disconnected): {type(e).__name__}", file=sys.stderr)
