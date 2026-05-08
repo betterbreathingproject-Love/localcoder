@@ -2154,7 +2154,11 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
               `A similar region was found near line ${bestIdx + 1}. Here is the ACTUAL content — copy it exactly as old_string, or use edit_file_lines with start_line=${regionStart + 1} end_line=${Math.min(regionEnd, contentLines.length)}:\n\n${actual}` }
           }
 
-          return { error: `old_string not found in ${args.path}. Make sure it matches exactly. Tip: re-read the file with read_file first to get the current content, then use the exact text from that read.` }
+          const _fileLines = content.split('\n').length
+          const _fileSizeHint = _fileLines > 200
+            ? ` The file is large (${_fileLines} lines) — use read_file with start_line/end_line to read the section you want to edit.`
+            : ''
+          return { error: `old_string not found in ${args.path}. Make sure it matches exactly.${_fileSizeHint} Tip: re-read the file with read_file first to get the current content, then use the exact text from that read.` }
         }
         const count = content.split(_editOldString).length - 1
         if (count > 1) return { error: `old_string found ${count} times in ${args.path}. Make it more specific so it matches exactly once.` }
@@ -2324,7 +2328,9 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
             }
           }
           if (!fileContent.includes(_batchOld)) {
-            results.push(`Edit ${i + 1} (${edit.path}): ❌ old_string not found`)
+            const _batchLines = fileContent.split('\n').length
+            const _batchHint = _batchLines > 200 ? ` (file is ${_batchLines} lines — re-read the target section first)` : ''
+            results.push(`Edit ${i + 1} (${edit.path}): ❌ old_string not found${_batchHint}`)
             errorCount++
             continue
           }
@@ -6255,6 +6261,49 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                 } catch { /* skip caching if read fails */ }
               }
             } catch { /* non-fatal */ }
+          }
+
+          // Step 3: Duplicate symbol detection — catch accidental function/class duplication
+          if (postWriteFixer && postWriteFixer.detectDuplicateSymbols) {
+            try {
+              const dupResult = postWriteFixer.detectDuplicateSymbols(absPath)
+              if (dupResult.duplicates.length > 0) {
+                const dupWarnings = dupResult.duplicates
+                  .map(d => `  • "${d.name}" declared on lines: ${d.lines.join(', ')}`)
+                  .join('\n')
+                const dupMsg = `\n\n⚠️ DUPLICATE SYMBOLS DETECTED in ${fnArgs.path}:\n${dupWarnings}\n` +
+                  `This will cause runtime errors. You must remove the duplicate declaration(s) immediately.`
+                content = (content || '') + dupMsg
+                this.send('qwen-event', { type: 'system', subtype: 'warning',
+                  data: `⚠️ Duplicate symbols in ${fnArgs.path}: ${dupResult.duplicates.map(d => d.name).join(', ')}` })
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          // Step 4: Lightweight syntax check — immediate feedback without waiting for LSP
+          if (postWriteFixer && postWriteFixer.checkSyntax) {
+            try {
+              const syntaxErr = postWriteFixer.checkSyntax(absPath)
+              if (syntaxErr) {
+                const syntaxMsg = `\n\n❌ SYNTAX ERROR after write: ${syntaxErr}\nFix this before proceeding.`
+                content = (content || '') + syntaxMsg
+                this.send('qwen-event', { type: 'system', subtype: 'warning',
+                  data: `❌ Syntax error in ${fnArgs.path}: ${syntaxErr}` })
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          // Step 5: Read-before-write warning — nudge agent when it edits a file it hasn't read
+          if (fnName === 'edit_file') {
+            const readEntry = _readFileHistory.get(fnArgs.path)
+            if (!readEntry || readEntry.count === 0) {
+              const rbwMsg = `\n\n⚠️ You edited "${fnArgs.path}" without reading it first this session. ` +
+                `This increases the risk of old_string mismatches and unintended changes. ` +
+                `Consider reading the file before making further edits.`
+              content = (content || '') + rbwMsg
+              this.send('qwen-event', { type: 'system', subtype: 'debug',
+                data: `⚠️ Blind edit: ${fnArgs.path} was not read before editing` })
+            }
           }
         }
 

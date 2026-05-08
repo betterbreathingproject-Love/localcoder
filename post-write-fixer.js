@@ -145,4 +145,130 @@ function fixAfterWrite(absPath, cwd, opts = {}) {
   }
 }
 
-module.exports = { fixAfterWrite, JS_EXTENSIONS, SKIP_PATTERNS }
+// ── Duplicate Symbol Detection ────────────────────────────────────────────────
+// Scans for duplicate function/class declarations in a file after write.
+// Returns an array of warnings (empty if no duplicates found).
+
+// Extensions eligible for duplicate detection
+const CODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.html', '.htm'])
+
+/**
+ * Detect duplicate top-level function/class declarations in a file.
+ * For HTML files, extracts <script> content first.
+ *
+ * @param {string} absPath - Absolute path to the file
+ * @returns {{ duplicates: Array<{name: string, lines: number[]}> }}
+ */
+function detectDuplicateSymbols(absPath) {
+  const ext = path.extname(absPath).toLowerCase()
+  if (!CODE_EXTENSIONS.has(ext)) return { duplicates: [] }
+
+  // Skip vendor/generated
+  for (const pattern of SKIP_PATTERNS) {
+    if (pattern.test(absPath)) return { duplicates: [] }
+  }
+
+  let code
+  try {
+    code = fs.readFileSync(absPath, 'utf-8')
+  } catch {
+    return { duplicates: [] }
+  }
+
+  // For HTML files, extract all <script> blocks
+  if (ext === '.html' || ext === '.htm') {
+    const scripts = []
+    const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi
+    let match
+    while ((match = scriptRegex.exec(code)) !== null) {
+      scripts.push(match[1])
+    }
+    code = scripts.join('\n')
+  }
+
+  // Regex-based detection of function/class declarations
+  // Matches: function name(, async function name(, class Name {, class Name extends
+  const declRegex = /^[ \t]*(?:export\s+)?(?:async\s+)?(?:function\s*\*?\s+|class\s+)([A-Za-z_$][A-Za-z0-9_$]*)/gm
+  const declarations = new Map() // name → [lineNumbers]
+
+  const lines = code.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    declRegex.lastIndex = 0
+    const m = declRegex.exec(lines[i])
+    if (m) {
+      const name = m[1]
+      if (!declarations.has(name)) declarations.set(name, [])
+      declarations.get(name).push(i + 1)
+    }
+  }
+
+  const duplicates = []
+  for (const [name, lineNums] of declarations) {
+    if (lineNums.length > 1) {
+      duplicates.push({ name, lines: lineNums })
+    }
+  }
+
+  return { duplicates }
+}
+
+// ── Lightweight Syntax Check ──────────────────────────────────────────────────
+// Quick syntax validation without requiring external tools.
+// For JS: uses `new Function()` to check syntax.
+// For HTML: extracts <script> and checks each block.
+
+/**
+ * Run a lightweight syntax check on a file.
+ * Returns null if OK, or an error message string if syntax is broken.
+ *
+ * @param {string} absPath - Absolute path to the file
+ * @returns {string|null} Error message or null if valid
+ */
+function checkSyntax(absPath) {
+  const ext = path.extname(absPath).toLowerCase()
+
+  let code
+  try {
+    code = fs.readFileSync(absPath, 'utf-8')
+  } catch {
+    return null // Can't read — skip
+  }
+
+  if (JS_EXTENSIONS.has(ext)) {
+    return _checkJsSyntax(code, absPath)
+  }
+
+  if (ext === '.html' || ext === '.htm') {
+    const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi
+    let match
+    let blockIdx = 0
+    while ((match = scriptRegex.exec(code)) !== null) {
+      blockIdx++
+      const err = _checkJsSyntax(match[1], `${absPath} <script block #${blockIdx}>`)
+      if (err) return err
+    }
+  }
+
+  return null
+}
+
+function _checkJsSyntax(code, label) {
+  try {
+    // Use Function constructor for syntax check — doesn't execute the code
+    new Function(code)
+    return null
+  } catch (e) {
+    // Extract useful info from the syntax error
+    const msg = e.message || 'Unknown syntax error'
+    return `Syntax error in ${path.basename(label)}: ${msg}`
+  }
+}
+
+module.exports = {
+  fixAfterWrite,
+  detectDuplicateSymbols,
+  checkSyntax,
+  JS_EXTENSIONS,
+  CODE_EXTENSIONS,
+  SKIP_PATTERNS,
+}
