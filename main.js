@@ -460,86 +460,12 @@ ipcServer.registerModelLoadHook(async ({ modelPath, reason }) => {
   }
 })
 
-// ── Post-model-load: enable speculative decoding ──────────────────────────
-// With the primary model loaded as text-only (mlx_lm) and the fast 0.8B
-// already loaded for extraction, we can use the 0.8B as a draft model.
-// The server verifies every draft token against the target, so wrong guesses
-// are discarded with no quality loss. Typical speedup: 1.5–2.5×.
-//
-// Opt-out via app settings { speculativeDecodingEnabled: false }. The hook
-// waits for the fast model to actually be loaded (the extractor-load call in
-// ipc-server.js is fire-and-forget, so we poll status briefly before enabling).
-ipcServer.registerModelLoadHook(async ({ modelPath, reason }) => {
-  try {
-    const projects = require('./projects')
-    const appSettings = projects.getAppSettings ? projects.getAppSettings() : {}
-    if (appSettings.speculativeDecodingEnabled === false) {
-      console.log('[speculative] Disabled by app settings — skipping auto-enable')
-      return
-    }
-
-    // Both models need to share the same tokenizer family. The default pair
-    // (Qwen3.6-35B primary + Qwen3.5-0.8B draft) works because both load
-    // the same Qwen3 tokenizer via mlx_lm. Users can override the draft via
-    // `lastFastModelPath`.
-    const draftModelPath = appSettings.lastFastModelPath || config.DEFAULT_FAST_MODEL
-    if (!draftModelPath) {
-      console.log('[speculative] No draft model configured — skipping')
-      return
-    }
-
-    // Extra delay so the prefix-cache build (above) finishes first — both
-    // hold the Metal lock and draft-model load adds ~3-5s on top of what's
-    // already serialized at startup.
-    await new Promise(r => setTimeout(r, 6000))
-
-    const http = require('http')
-    const body = JSON.stringify({
-      enabled: true,
-      draft_model_path: draftModelPath,
-      num_draft_tokens: appSettings.speculativeNumDraftTokens || 4,
-    })
-
-    await new Promise((resolve) => {
-      const req = http.request({
-        hostname: '127.0.0.1', port: SERVER_PORT, path: '/admin/speculative', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      }, (res) => {
-        let d = ''; res.on('data', (c) => d += c)
-        res.on('end', () => {
-          if (res.statusCode >= 400) {
-            // Common failure modes: vision model loaded as primary, tokenizer
-            // mismatch, OOM on draft load. Log and move on — the agent still
-            // works without speculation.
-            let msg = `HTTP ${res.statusCode}`
-            try { msg = JSON.parse(d).detail || msg } catch {}
-            console.warn(`[speculative] Auto-enable failed: ${msg}`)
-            mainWindow?.webContents.send('server-log', `⚠️ Speculative decoding unavailable: ${msg}`)
-            return resolve()
-          }
-          try {
-            const r = JSON.parse(d)
-            if (r.speculative_enabled) {
-              console.log(`[speculative] Enabled with draft=${r.draft_model?.split('/').pop()}, num=${r.num_draft_tokens}`)
-              mainWindow?.webContents.send('server-log', `⚡ Speculative decoding on (${r.num_draft_tokens} tokens, draft=${r.draft_model?.split('/').pop()})`)
-            }
-          } catch { /* non-fatal */ }
-          resolve()
-        })
-        res.on('error', () => resolve())
-      })
-      req.on('error', (err) => {
-        console.warn(`[speculative] Request failed: ${err.message}`)
-        resolve()
-      })
-      // Draft-model load can take up to ~90s on cold disk
-      req.setTimeout(90000, () => { req.destroy(); resolve() })
-      req.write(body); req.end()
-    })
-  } catch (err) {
-    console.warn(`[speculative] Auto-enable error (non-fatal): ${err.message}`)
-  }
-})
+// ── Post-model-load: speculative decoding (DISABLED) ──────────────────────
+// Speculative decoding with the 0.8B draft model was causing the 35B target
+// to generate text-only responses without tool calls on turn 0, breaking the
+// agent loop. Disabled until the root cause in MLX's speculative_generate_step
+// is identified. The server endpoint /admin/speculative still works for manual
+// testing — just not auto-enabled on model load.
 
 // ── Setup: launch main window from setup wizard ───────────────────────────────
 ipcMain.handle('setup-launch-main', async () => {
