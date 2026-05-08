@@ -3568,7 +3568,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
                     'Content-Length': Buffer.byteLength(orBodyStr),
                     'Authorization': `Bearer ${appSettings.openrouterApiKey}`,
                     'HTTP-Referer': 'https://github.com/qwencoder-mac-studio',
-                    'X-Title': 'QwenCoder Mac Studio',
+                    'X-Title': 'LocalCoder Mac Studio',
                   }
                   const https = require('https')
                   const r = https.request(OPENROUTER_CHAT_URL, { method: 'POST', headers: orHeaders, timeout: 120000 }, (res) => {
@@ -7491,7 +7491,7 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
             extraHeaders = {
               'Authorization': `Bearer ${appSettings.openrouterApiKey}`,
               'HTTP-Referer': 'https://github.com/qwencoder-mac-studio',
-              'X-Title': 'QwenCoder Mac Studio',
+              'X-Title': 'LocalCoder Mac Studio',
             }
             // Robin Auto: use robin-router to pick the best free model
             if (appSettings.robinAutoEnabled) {

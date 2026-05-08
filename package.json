@@ -1,7 +1,7 @@
 {
-  "name": "qwencoder-mac-studio",
+  "name": "localcoder-mac-studio",
   "version": "1.0.1",
-  "description": "QwenCoder Mac Studio — local MLX vision server + vibe coding",
+  "description": "LocalCoder Mac Studio — local MLX vision server + vibe coding",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -10,8 +10,8 @@
     "test": "node --test 'test/*.test.js'"
   },
   "build": {
-    "appId": "com.qwencoder.macstudio",
-    "productName": "QwenCoder Mac Studio",
+    "appId": "com.localcoder.macstudio",
+    "productName": "LocalCoder Mac Studio",
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.icns",

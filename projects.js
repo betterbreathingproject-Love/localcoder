@@ -1,5 +1,5 @@
 /**
- * Project + session + conversation persistence for QwenCoder Mac Studio.
+ * Project + session + conversation persistence for LocalCoder Mac Studio.
  * Stores data in ~/.qwencoder/projects/{id}/
  *   project.json   — metadata
  *   settings.json   — context & compactor settings

@@ -1,4 +1,4 @@
-// QwenCoder Mac Studio — renderer
+// LocalCoder Mac Studio — renderer
 let allModels=[], selectedModel=null, loadedModelId=null, imageB64=null, isGenerating=false
 let currentFile=null, currentProject=null
 let attachedImgs = [] // [{name, b64}]

@@ -1,5 +1,5 @@
 /**
- * xcode-tool.js — XcodeBuildMCP integration for QwenCoder Mac Studio.
+ * xcode-tool.js — XcodeBuildMCP integration for LocalCoder Mac Studio.
  *
  * Spawns xcodebuildmcp as a stdio MCP server subprocess and exposes its tools
  * to the agent loop via the same interface as LSP tools.
