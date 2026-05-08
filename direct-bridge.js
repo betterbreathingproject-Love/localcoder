@@ -2766,6 +2766,26 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
       case 'update_todos': {
         // update_todos is handled by the renderer via the tool-use/tool-result event flow.
         // We just validate and return success here — the renderer picks up the input from the tool-use event.
+
+        // ── Corruption guard: detect write_file content bleeding into update_todos ──
+        // When the model emits write_file and update_todos in the same turn, the JSON
+        // sometimes gets garbled — the "content" field from write_file ends up in the
+        // update_todos args. Detect this and silently skip the corrupted call.
+        if (args.content && typeof args.content === 'string' && args.content.length > 200) {
+          // If "content" looks like code (has newlines, function keywords, etc.), it's corrupted
+          const looksLikeCode = args.content.includes('\n') &&
+            (/function\s|const\s|let\s|var\s|class\s|import\s|require\(|<\/?\w+>/.test(args.content))
+          if (looksLikeCode) {
+            return { result: 'Todo update skipped (args corrupted by concurrent write_file). Your todos are unchanged — the auto-advance system is tracking progress.' }
+          }
+        }
+        // Also detect when args.path exists (write_file arg leaked in)
+        if (args.path && typeof args.path === 'string' && (args.path.endsWith('.js') || args.path.endsWith('.html') || args.path.endsWith('.css'))) {
+          if (!args.todos && !Array.isArray(args)) {
+            return { result: 'Todo update skipped (args corrupted — contains file path from write_file). Your todos are unchanged.' }
+          }
+        }
+
         let todos = args.todos
 
         // ── Auto-repair: model often passes todos in wrong format ──────────
@@ -2802,7 +2822,7 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           if (Array.isArray(todos)) args.todos = todos
         }
 
-        if (!Array.isArray(todos)) return { error: 'todos must be an array. Pass: update_todos({"todos": [{"id": 1, "content": "task", "status": "pending"}]})' }
+        if (!Array.isArray(todos)) return { error: 'todos must be an array. Pass: update_todos({"todos": [{"id": 1, "content": "task", "status": "pending"}]}). If you just want to mark a todo done, use edit_todos({"update": [{"id": 1, "status": "done"}]}) instead.' }
         // Normalize: ensure each item has required fields
         todos = todos.map((t, i) => ({
           id: t.id ?? (i + 1),
@@ -6989,7 +7009,15 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
               const nextIsAlsoWrite = remainingCalls.some(rtc => {
                 try { return _WRITE_TOOLS_AUTO.has(rtc.function.name) } catch { return false }
               })
-              if (!nextIsAlsoWrite) {
+              // Also don't auto-advance if the model is calling update_todos/edit_todos
+              // in this same turn — it's managing todos itself.
+              const turnHasManualTodoUpdate = toolCalls.some(rtc => {
+                try {
+                  const n = rtc.function.name
+                  return n === 'update_todos' || n === 'edit_todos'
+                } catch { return false }
+              })
+              if (!nextIsAlsoWrite && !turnHasManualTodoUpdate) {
                 _lastTodos[inProgressIdx].status = 'done'
                 // Advance next pending to in_progress
                 const nextPending = _lastTodos.find(t => t.status === 'pending')
