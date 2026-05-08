@@ -367,6 +367,8 @@ agentPool.registerType({ name: 'general', systemPrompt: '', allowedTools: [
 ], timeout: 1800000 }) // 30 min
 agentPool.registerType({ name: 'game-dev', systemPrompt: '', allowedTools: [
   'read_file', 'read_files', 'write_file', 'edit_file', 'edit_file_lines', 'edit_files', 'list_dir', 'bash', 'search_files', 'web_search', 'web_fetch',
+  // Game scaffold — generates multi-file project structure
+  'scaffold_game',
   // DevTools — essential for seeing runtime errors in canvas/HTML games
   'devtools_navigate', 'devtools_console_logs', 'devtools_screenshot', 'devtools_evaluate', 'devtools_network_errors',
   // Browser — visual verification of game rendering

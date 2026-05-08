@@ -784,6 +784,24 @@ const TOOL_DEFS = [
   ...(xcodeTool ? xcodeTool.XCODE_TOOL_DEFS : []),
   // Chrome DevTools MCP tools — lets agent see console errors, network, DOM, perf
   ...(chromeDevTools ? chromeDevTools.DEVTOOLS_TOOL_DEFS : []),
+  // Game scaffold tool — generates multi-file game project structure
+  {
+    type: 'function',
+    function: {
+      name: 'scaffold_game',
+      description: 'Generate a multi-file game project scaffold. Creates a complete, runnable game with proper file separation (each file <200 lines). Use when starting a NEW game from scratch. The user can override any aspect — if they specify a framework, language, or structure, follow their preference instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Project folder name (default: "game")' },
+          type: { type: 'string', description: 'Game type: platformer, top-down, shooter, puzzle, arcade (default: platformer)' },
+          title: { type: 'string', description: 'Game title shown in browser tab' },
+          width: { type: 'number', description: 'Canvas width in pixels (default: 800)' },
+          height: { type: 'number', description: 'Canvas height in pixels (default: 600)' },
+        },
+      },
+    },
+  },
 ]
 
 // ── LSP tool definitions (same shape as TOOL_DEFS entries) ────────────────────
@@ -3073,6 +3091,31 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
         } catch (err) {
           return { error: `Failed to open browser: ${err.message}` }
         }
+      }
+      case 'scaffold_game': {
+        let gameScaffold = null
+        try { gameScaffold = require('./game-scaffold') } catch { /* not available */ }
+        if (!gameScaffold) {
+          return { error: 'Game scaffold module not available. Create the files manually using write_file.' }
+        }
+        const files = gameScaffold.generateGameScaffold({
+          name: args.name || 'game',
+          type: args.type || 'platformer',
+          title: args.title || args.name || 'Game',
+          width: args.width || 800,
+          height: args.height || 600,
+        })
+        // Write all files
+        let created = 0
+        for (const file of files) {
+          const filePath = path.resolve(cwd, file.path)
+          const dir = path.dirname(filePath)
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+          fs.writeFileSync(filePath, file.content, 'utf-8')
+          created++
+        }
+        const summary = files.map(f => `  ${f.path} — ${f.description}`).join('\n')
+        return { result: `Created ${created} files for "${args.name || 'game'}" (${args.type || 'platformer'}):\n${summary}\n\nOpen ${args.name || 'game'}/index.html in a browser to play. Edit individual files to add features.` }
       }
       default: {
         // Generate Xcode project — programmatic, no LLM needed
@@ -8150,6 +8193,37 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
         '  - Collision: usually a dedicated function — extend it, don\'t duplicate it\n' +
         '  - Input handling: usually one keydown/keyup listener — add cases, don\'t add new listeners\n' +
         '  - Camera/scroll: affects ALL draw calls — new draw code must account for camera offset\n' +
+        '\n' +
+        '## New Game Projects — Multi-File Scaffold\n' +
+        'When creating a NEW game from scratch (not editing an existing one), use this multi-file structure\n' +
+        'UNLESS the user explicitly requests a single file or a specific framework/engine.\n' +
+        'Each file stays under 200 lines — this keeps edits precise and avoids context overflow.\n' +
+        '\n' +
+        'Default structure (vanilla JS, no build step, browser-runnable):\n' +
+        '  game/\n' +
+        '  ├── index.html       — canvas element + <script> tags loading all modules in order\n' +
+        '  ├── config.js        — constants: canvas size, colors, speeds, tuning values\n' +
+        '  ├── input.js         — keyboard/mouse/touch state tracking (single listener per event type)\n' +
+        '  ├── utils.js         — shared helpers: clamp, lerp, randomRange, AABB collision check\n' +
+        '  ├── entities.js      — entity classes/factories: Player, Enemy, Bullet, Particle, etc.\n' +
+        '  ├── physics.js       — movement, gravity, collision resolution\n' +
+        '  ├── levels.js        — level data, tile maps, spawning logic, level transitions\n' +
+        '  ├── renderer.js      — all draw functions: drawPlayer, drawEnemies, drawUI, drawBackground\n' +
+        '  ├── audio.js         — sound effects and music (Web Audio API or <audio> elements)\n' +
+        '  └── main.js          — game loop (requestAnimationFrame), state machine, init\n' +
+        '\n' +
+        'Script load order in index.html: config → utils → input → entities → physics → levels → renderer → audio → main\n' +
+        '\n' +
+        'Rules for scaffolding:\n' +
+        '  - Create ALL files in one pass (write_file each), then open index.html to verify\n' +
+        '  - main.js owns the game loop and state machine — other files export functions only\n' +
+        '  - All game state lives in a single `state` object in main.js (or a dedicated state.js)\n' +
+        '  - No module bundler, no import/export — just global functions loaded via script tags\n' +
+        '  - Each file has a comment header explaining its responsibility\n' +
+        '\n' +
+        'OVERRIDE: If the user specifies a framework (Phaser, PixiJS, Three.js, LÖVE2D, Pygame, Godot, Unity),\n' +
+        'a language (Lua, Python, C#, Rust), or a structure preference (single file, ECS, etc.),\n' +
+        'follow their preference exactly. The scaffold above is the DEFAULT when nothing is specified.\n' +
         '\n' +
         '## After Each Edit\n' +
         '  1. Open the game: use devtools_navigate or bash({command: "open file.html"})\n' +
