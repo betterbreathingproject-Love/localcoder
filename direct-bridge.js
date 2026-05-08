@@ -1661,17 +1661,26 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
   }
 
   // Route raw MCP tool names to devtools_* equivalents — agents sometimes call
-  // the underlying MCP tool name (e.g. 'console_get_logs') instead of the
+  // the underlying MCP tool name (e.g. 'list_console_messages') instead of the
   // agent-facing name ('devtools_console_logs'). Map them transparently.
   if (chromeDevTools) {
     const _REVERSE_DEVTOOLS_MAP = {
+      list_console_messages: 'devtools_console_logs',
+      get_console_message: 'devtools_console_logs',
       console_get_logs: 'devtools_console_logs',
+      list_network_requests: 'devtools_network_errors',
+      get_network_request: 'devtools_network_errors',
       network_get_failed_requests: 'devtools_network_errors',
+      navigate_page: 'devtools_navigate',
       navigate: 'devtools_navigate',
+      take_screenshot: 'devtools_screenshot',
       screenshot: 'devtools_screenshot',
+      evaluate_script: 'devtools_evaluate',
       javascript_evaluate: 'devtools_evaluate',
+      take_snapshot: 'devtools_get_styles',
       css_get_computed_styles: 'devtools_get_styles',
       performance_start_trace: 'devtools_performance_trace',
+      click: 'devtools_click',
       interaction_click: 'devtools_click',
     }
     if (_REVERSE_DEVTOOLS_MAP[name]) {
@@ -3109,9 +3118,18 @@ async function executeTool(name, args, cwd, browserInstance, lspManager, inputRe
           return { error: `Chrome DevTools MCP is not available. Use browser_screenshot (Playwright) instead for visual checks, or bash to run the app and check console output.` }
         }
         // Catch raw MCP devtools tool names when module isn't loaded
-        const _RAW_DEVTOOLS_NAMES = new Set(['console_get_logs', 'network_get_failed_requests', 'navigate', 'screenshot', 'javascript_evaluate', 'css_get_computed_styles', 'performance_start_trace', 'interaction_click'])
+        const _RAW_DEVTOOLS_NAMES = new Set([
+          'console_get_logs', 'list_console_messages', 'get_console_message',
+          'network_get_failed_requests', 'list_network_requests', 'get_network_request',
+          'navigate', 'navigate_page',
+          'screenshot', 'take_screenshot',
+          'javascript_evaluate', 'evaluate_script',
+          'css_get_computed_styles', 'take_snapshot',
+          'performance_start_trace',
+          'interaction_click', 'click',
+        ])
         if (_RAW_DEVTOOLS_NAMES.has(name)) {
-          return { error: `"${name}" is a Chrome DevTools MCP tool but the DevTools module is not available. Use the prefixed name (devtools_${name === 'screenshot' ? 'screenshot' : name}) or use Playwright tools (browser_screenshot, browser_navigate) instead.` }
+          return { error: `"${name}" is a Chrome DevTools MCP tool but the DevTools module is not available. Use the agent-facing tools instead: devtools_console_logs, devtools_screenshot, devtools_navigate, devtools_evaluate. Or use Playwright tools (browser_screenshot, browser_navigate) as an alternative.` }
         }
         return { error: `Unknown tool: ${name}` }
       }

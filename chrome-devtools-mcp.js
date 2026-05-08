@@ -131,14 +131,14 @@ const DEVTOOLS_TOOL_DEFS = [
 // ── Map agent-facing tool names to Chrome DevTools MCP tool names ─────────────
 
 const TOOL_NAME_MAP = {
-  devtools_console_logs: 'console_get_logs',
-  devtools_network_errors: 'network_get_failed_requests',
-  devtools_navigate: 'navigate',
-  devtools_screenshot: 'screenshot',
-  devtools_evaluate: 'javascript_evaluate',
-  devtools_get_styles: 'css_get_computed_styles',
+  devtools_console_logs: 'list_console_messages',
+  devtools_network_errors: 'list_network_requests',
+  devtools_navigate: 'navigate_page',
+  devtools_screenshot: 'take_screenshot',
+  devtools_evaluate: 'evaluate_script',
+  devtools_get_styles: 'take_snapshot',
   devtools_performance_trace: 'performance_start_trace',
-  devtools_click: 'interaction_click',
+  devtools_click: 'click',
 }
 
 // ── ChromeDevToolsMCPClient ───────────────────────────────────────────────────
@@ -386,9 +386,27 @@ async function executeDevToolsTool(name, args) {
     return { error: `Unknown devtools tool: ${name}. Available: ${Object.keys(TOOL_NAME_MAP).join(', ')}` }
   }
 
+  // Transform agent-facing args to match the actual MCP tool's expected format
+  let mcpArgs = args || {}
+  if (name === 'devtools_navigate' && mcpArgs.url) {
+    mcpArgs = { url: mcpArgs.url, type: 'url' }
+  }
+  if (name === 'devtools_click' && mcpArgs.selector) {
+    // Agent passes CSS selector, but chrome-devtools-mcp uses uid from snapshot.
+    // Pass selector as uid — the tool may accept it, or we'll get a clear error.
+    mcpArgs = { uid: mcpArgs.selector }
+  }
+  if (name === 'devtools_evaluate' && mcpArgs.expression) {
+    mcpArgs = { expression: mcpArgs.expression }
+  }
+  if (name === 'devtools_performance_trace') {
+    // The actual tool is performance_start_trace — no duration param, it starts recording
+    mcpArgs = {}
+  }
+
   const client = getClient()
   try {
-    const result = await client.callTool(mcpToolName, args || {})
+    const result = await client.callTool(mcpToolName, mcpArgs)
     // MCP response format: { content: [{ type: "text", text: "..." }] }
     if (result && result.content && Array.isArray(result.content)) {
       const text = result.content
