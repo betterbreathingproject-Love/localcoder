@@ -1310,7 +1310,7 @@ def admin_status():
         "autotune_enabled": True,  # always active — built into server
         "autotune_features": ["dynamic_kv_sizing", "smart_cache_clearing", "prefill_batching"],
         # ── prefill step size ─────────────────────────────────────────────────
-        "prefill_step_size": _PREFILL_STEP_SIZE_OVERRIDE if _PREFILL_STEP_SIZE_OVERRIDE > 0 else "1024 (<16K) / 2048 (≥16K)",
+        "prefill_step_size": _PREFILL_STEP_SIZE_OVERRIDE if _PREFILL_STEP_SIZE_OVERRIDE > 0 else 2048,
         # ── speculative decoding ──────────────────────────────────────────────
         "speculative_enabled": _speculative_enabled,
         "draft_model": _draft_model_path,
@@ -1953,20 +1953,19 @@ async def chat_completions(req: ChatRequest):
 
         # Prefill batching (autotune optimization #6):
         # Larger batch = fewer Metal kernel dispatches for long prompts.
-        # MLX default is 512. Benchmarked on Qwen3.6-35B-A3B (MoE):
-        #   512  → baseline (MLX default)
-        #   1024 → optimal for prompts <16K chars (~4000 tokens)
-        #   2048 → optimal for prompts ≥16K chars (17% faster than 1024 at 20K)
-        # MoE expert routing causes memory pressure at larger step sizes on
-        # shorter prompts, but kernel dispatch overhead dominates on longer ones.
-        # Override via PREFILL_STEP_SIZE env var to lock a specific value.
+        # MLX default is 512. Benchmarked on Qwen3.6-35B-A3B (MoE) with
+        # realistic agentic prompts (tool schemas + code + conversation):
+        #   512  → 4480ms (too many dispatches)
+        #   1024 → 3767ms
+        #   2048 → 3672ms ← optimal (492 tok/s)
+        #   4096 → 4231ms (MoE expert memory pressure)
+        # For longer sessions (>16K chars), 2048 is also 17% faster than 1024.
+        # Override via PREFILL_STEP_SIZE env var to tune for your model.
         if not _model_is_vision and len(prompt) > 2000:
             if _PREFILL_STEP_SIZE_OVERRIDE > 0:
                 kwargs['prefill_step_size'] = _PREFILL_STEP_SIZE_OVERRIDE
-            elif len(prompt) >= 16000:
-                kwargs['prefill_step_size'] = 2048
             else:
-                kwargs['prefill_step_size'] = 1024
+                kwargs['prefill_step_size'] = 2048
 
         print(f"[server] Streaming: prompt_len={len(prompt)}, max_tokens={kwargs.get('max_tokens')}, "
               f"temp={kwargs.get('temp', 'default')}, top_p={kwargs.get('top_p', 'default')}", file=sys.stderr)
@@ -2523,10 +2522,8 @@ async def chat_completions(req: ChatRequest):
         if len(prompt) > 2000:
             if _PREFILL_STEP_SIZE_OVERRIDE > 0:
                 kwargs['prefill_step_size'] = _PREFILL_STEP_SIZE_OVERRIDE
-            elif len(prompt) >= 16000:
-                kwargs['prefill_step_size'] = 2048
             else:
-                kwargs['prefill_step_size'] = 1024
+                kwargs['prefill_step_size'] = 2048
 
     # ── speculative decoding (non-streaming) ──────────────────────────────────
     _ns_draft = None
