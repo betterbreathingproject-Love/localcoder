@@ -1012,12 +1012,60 @@ const LSP_TOOL_SETS = {
 // Preserves: type, properties, required, enum, items (structural contract).
 // Removes: description on nested properties, examples, default, title.
 // Top-level function description is kept (model needs it for tool selection).
-// Estimated savings: 30-40% of tool schema tokens.
+//
+// Levels:
+//   'off'      — no pruning (original behavior)
+//   'safe'     — remove nested descriptions, examples, default, title
+//   'compact'  — safe + replace verbose top-level descriptions with short versions
+//   'aggressive' — compact + truncate any remaining long descriptions to 140 chars
 
-const SCHEMA_PRUNE_LEVEL = process.env.SCHEMA_PRUNE || 'safe'
-// 'off'        — no pruning (original behavior)
-// 'safe'       — remove nested descriptions, examples, default, title
-// 'aggressive' — also truncate top-level description to 140 chars
+const SCHEMA_PRUNE_LEVEL = process.env.SCHEMA_PRUNE || 'compact'
+
+/**
+ * Compact descriptions for built-in tools. These are short, dense alternatives
+ * to the verbose originals — enough for the model to select the right tool
+ * without burning tokens on usage examples and caveats.
+ * ~60-70% shorter than originals on average.
+ */
+const COMPACT_DESCRIPTIONS = {
+  read_file: 'Read file contents. Pass path only; use start_line/end_line only for 1000+ line files.',
+  read_files: 'Read multiple files at once. Faster than repeated read_file calls.',
+  write_file: 'Write/overwrite a file. Creates parent dirs as needed.',
+  edit_file: 'Find-and-replace a string in a file. old_string must match exactly.',
+  edit_file_lines: 'Replace a line range in a file. Use when edit_file fails on large files.',
+  edit_files: 'Batch find-and-replace across multiple files in one call.',
+  list_dir: 'List directory contents recursively. Set depth=0 for flat listing.',
+  bash: 'Run a shell command. 30s timeout (5min for install/build). Do NOT call agent tools via bash.',
+  bash_batch: 'Run multiple shell commands sequentially in one call.',
+  search_files: 'Grep for patterns in files. Prefer patterns array over single pattern.',
+  update_todos: 'Set/replace the entire todo list. Use edit_todos for partial changes.',
+  edit_todos: 'Add, update, or remove individual todo items without replacing the list.',
+  agent_notes: 'Write persistent notes that survive context compaction.',
+  rewind_context: 'Retrieve uncompressed content for a previously compressed section.',
+  task_complete: 'Signal task completion. MUST be called when done.',
+  generate_xcode_project: 'Generate project.pbxproj from Swift source files automatically.',
+  ask_user: 'Ask the user a question and wait for their reply.',
+  open_browser: 'Open a URL or local HTML file in the default browser.',
+  vision_review: 'Screenshot a page and analyze it with the vision model.',
+  web_search: 'Search the web. Returns snippets with URLs.',
+  web_fetch: 'Fetch and extract content from a URL as markdown.',
+  browser_navigate: 'Navigate browser to a URL.',
+  browser_screenshot: 'Take a screenshot of the current browser page.',
+  browser_click: 'Click an element by selector.',
+  browser_type: 'Type text into an input element.',
+  browser_get_text: 'Get text content of an element.',
+  browser_get_html: 'Get HTML of an element or page.',
+  browser_evaluate: 'Execute JavaScript in the browser.',
+  browser_wait_for: 'Wait for an element to appear.',
+  browser_select_option: 'Select an option from a dropdown.',
+  browser_close: 'Close the browser.',
+  desktop_get_screen_size: 'Get screen dimensions.',
+  desktop_screenshot: 'Take a desktop screenshot.',
+  desktop_mouse_move: 'Move mouse to coordinates.',
+  desktop_mouse_click: 'Click at coordinates.',
+  desktop_keyboard_type: 'Type text via keyboard.',
+  desktop_keyboard_press: 'Press a key combination.',
+}
 
 /**
  * Deep-prune a JSON schema object, removing non-structural metadata.
@@ -1069,6 +1117,14 @@ function pruneToolDef(toolDef) {
   const fn = toolDef.function
   let description = fn.description || ''
 
+  // Compact mode: use short descriptions for known tools
+  if (SCHEMA_PRUNE_LEVEL === 'compact' || SCHEMA_PRUNE_LEVEL === 'aggressive') {
+    if (COMPACT_DESCRIPTIONS[fn.name]) {
+      description = COMPACT_DESCRIPTIONS[fn.name]
+    }
+  }
+
+  // Aggressive mode: also truncate any remaining long descriptions
   if (SCHEMA_PRUNE_LEVEL === 'aggressive' && description.length > 140) {
     description = description.slice(0, 137) + '...'
   }
