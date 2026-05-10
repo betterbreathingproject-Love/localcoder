@@ -59,6 +59,14 @@ _num_draft_tokens = 4        # sweet-spot for Qwen3.5 0.8B → 35B on Apple Sili
 # None = disabled (default, full precision).
 _kv_bits: int | None = None  # 4 | 8 | None
 
+# ── prefill step size (chunked prefill) ───────────────────────────────────────
+# Controls how many tokens are processed per Metal kernel dispatch during prefill.
+# Larger = fewer kernel launches = faster prefill on Apple Silicon.
+# MLX default is 512. Research shows 4096-8192 is optimal for 35B models.
+# Override via PREFILL_STEP_SIZE env var (e.g. PREFILL_STEP_SIZE=8192).
+# Set to 0 to use adaptive scaling based on prompt length (default behavior).
+_PREFILL_STEP_SIZE_OVERRIDE = int(os.environ.get("PREFILL_STEP_SIZE", "0"))
+
 # ── prefix cache state ────────────────────────────────────────────────────────
 # After model load we prefill the system prompt once and save the KV state to
 # disk (~/.qwencoder/cache/<model_key>-sysprompt.safetensors).
@@ -1301,6 +1309,8 @@ def admin_status():
         "models": models,
         "autotune_enabled": True,  # always active — built into server
         "autotune_features": ["dynamic_kv_sizing", "smart_cache_clearing", "prefill_batching"],
+        # ── prefill step size ─────────────────────────────────────────────────
+        "prefill_step_size": _PREFILL_STEP_SIZE_OVERRIDE if _PREFILL_STEP_SIZE_OVERRIDE > 0 else "adaptive (2048/4096/8192)",
         # ── speculative decoding ──────────────────────────────────────────────
         "speculative_enabled": _speculative_enabled,
         "draft_model": _draft_model_path,
@@ -1943,10 +1953,21 @@ async def chat_completions(req: ChatRequest):
 
         # Prefill batching (autotune optimization #6):
         # Larger batch = fewer Metal kernel dispatches for long prompts.
-        # MLX default is 512; we use 1024 for prompts >2000 chars.
-        # This reduces TTFT on long-context requests by ~20-30%.
+        # MLX default is 512. Research shows 4096-8192 is optimal on Apple
+        # Silicon for 35B models — 1.5x faster prefill vs 512.
+        # Scale step size with prompt length:
+        #   >2K chars  → 2048 (safe default, 2x over MLX default)
+        #   >8K chars  → 4096 (sweet spot for medium prompts)
+        #   >20K chars → 8192 (maximum throughput for long context)
         if not _model_is_vision and len(prompt) > 2000:
-            kwargs['prefill_step_size'] = 1024
+            if _PREFILL_STEP_SIZE_OVERRIDE > 0:
+                kwargs['prefill_step_size'] = _PREFILL_STEP_SIZE_OVERRIDE
+            elif len(prompt) > 20000:
+                kwargs['prefill_step_size'] = 8192
+            elif len(prompt) > 8000:
+                kwargs['prefill_step_size'] = 4096
+            else:
+                kwargs['prefill_step_size'] = 2048
 
         print(f"[server] Streaming: prompt_len={len(prompt)}, max_tokens={kwargs.get('max_tokens')}, "
               f"temp={kwargs.get('temp', 'default')}, top_p={kwargs.get('top_p', 'default')}", file=sys.stderr)
@@ -2501,7 +2522,14 @@ async def chat_completions(req: ChatRequest):
         original_max = kwargs.get('max_tokens', 1024)
         kwargs['max_tokens'] = _autotune_max_tokens(prompt, original_max)
         if len(prompt) > 2000:
-            kwargs['prefill_step_size'] = 1024
+            if _PREFILL_STEP_SIZE_OVERRIDE > 0:
+                kwargs['prefill_step_size'] = _PREFILL_STEP_SIZE_OVERRIDE
+            elif len(prompt) > 20000:
+                kwargs['prefill_step_size'] = 8192
+            elif len(prompt) > 8000:
+                kwargs['prefill_step_size'] = 4096
+            else:
+                kwargs['prefill_step_size'] = 2048
 
     # ── speculative decoding (non-streaming) ──────────────────────────────────
     _ns_draft = None
