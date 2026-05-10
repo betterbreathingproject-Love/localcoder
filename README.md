@@ -60,6 +60,54 @@ You can use [LM Studio](https://lmstudio.ai) to download them, or grab them dire
 
 The setup wizard walks you through Python detection, model selection, and server start. Then open a project folder and start coding.
 
+## ⚡ Performance (v1.1.0)
+
+Benchmarked on Mac with Qwen3.6-35B-A3B-MLX-8bit:
+
+### Conversation Forking
+
+Saves KV cache state after each turn. Next turn only prefills new content.
+
+| Context Size | Without Fork | With Fork | Speedup |
+|---|---|---|---|
+| 5K chars (~1500 tok) | 7.4s | 0.3s | **25x** |
+| 10K chars (~3200 tok) | 5.5s | 0.3s | **18x** |
+| 20K chars (~6500 tok) | 11.2s | 0.3s | **37x** |
+
+Real multi-turn session (Mario game, tools active):
+- Turn 1 (cold): 2.7s
+- Turn 2 (fork hit): 1.3s — **2.1x faster**
+- Turn 3 (fork hit): 1.3s — **2.1x faster**
+
+### Schema Pruning (Compact Mode)
+
+Tool definitions sent to the model are compressed by 55%:
+
+| Metric | Before | After |
+|---|---|---|
+| Tool schema tokens (18 tools) | 3,418 | 1,535 |
+| Context budget used | 2.6% | 1.2% |
+| TTFT saved per cold turn | — | ~2.8s |
+
+### Prefill Step Size
+
+Benchmarked optimal `prefill_step_size` for MoE model:
+
+| Step Size | TTFT (realistic prompt) | Prefill Rate |
+|---|---|---|
+| 512 (MLX default) | 4,480ms | 403 tok/s |
+| 1024 | 3,767ms | 479 tok/s |
+| **2048 (optimal)** | **3,672ms** | **492 tok/s** |
+| 4096 | 4,231ms | 427 tok/s |
+
+### Prefix Cache (Semantic Splitting)
+
+System block (tools + instructions + prompt) cached after first turn:
+- Cold (no cache): 5.1s
+- Warm (cache hit): 0.4s — **13x faster**
+
+---
+
 ## 🤖 How It Works
 
 ```
