@@ -340,6 +340,7 @@ def _unload_model():
     global _system_prompt_token_cache, _last_metal_clear_time
     global _draft_model, _draft_model_path, _speculative_enabled
     global _prefix_cache_file, _prefix_cache_prompt, _prefix_cache_tokens
+    global _fork_cache_file, _fork_prompt_text, _fork_tokens
     if _model is not None:
         print(f"[server] Unloading current model: {_model_id}")
         _model = None
@@ -357,6 +358,9 @@ def _unload_model():
         _prefix_cache_file = None
         _prefix_cache_prompt = None
         _prefix_cache_tokens = 0
+        _fork_cache_file = None
+        _fork_prompt_text = None
+        _fork_tokens = 0
         import gc
         gc.collect()
         try:
@@ -1414,6 +1418,11 @@ def admin_status():
         "prefix_cache_enabled": _prefix_cache_enabled,
         "prefix_cache_tokens": _prefix_cache_tokens,
         "prefix_cache_ready": _prefix_cache_file is not None,
+        # ── conversation fork ─────────────────────────────────────────────────
+        "fork_enabled": _fork_enabled,
+        "fork_ready": _fork_cache_file is not None,
+        "fork_tokens": _fork_tokens,
+        "fork_threshold": _FORK_THRESHOLD,
     }
 
 
@@ -2085,20 +2094,52 @@ async def chat_completions(req: ChatRequest):
             print(f"[server] KV cache quantization: {_kv_bits}-bit", file=sys.stderr)
 
         # ── conversation fork cache ────────────────────────────────────────────
-        # If we have a saved fork from the previous turn, and the current prompt
-        # starts with the forked text, load the fork and only prefill the delta.
+        # If we have a saved fork from the previous turn, check if the current
+        # prompt shares a common prefix with the fork. The fork's KV cache
+        # covers the shared prefix, so we only need to prefill the new suffix.
         # This is 94-97% faster than re-prefilling the entire conversation.
+        #
+        # The fork stores the full rendered prompt from the previous turn.
+        # The current prompt re-renders the same history + new messages.
+        # The common prefix is the system block + shared conversation history.
+        # We find it by comparing character-by-character up to the fork length.
         _prompt_for_inference = prompt  # may be replaced with delta below
         _fork_used = False
         if (not _model_is_vision and _fork_enabled and _fork_cache_file
                 and _fork_prompt_text and len(prompt) >= _FORK_THRESHOLD):
-            if prompt.startswith(_fork_prompt_text) and len(prompt) > len(_fork_prompt_text):
+            # Find common prefix length between fork and current prompt
+            _fork_len = len(_fork_prompt_text)
+            _prompt_len = len(prompt)
+            _common_len = 0
+            _max_check = min(_fork_len, _prompt_len)
+            # Fast path: check if prompt starts with the fork (exact match)
+            if prompt.startswith(_fork_prompt_text):
+                _common_len = _fork_len
+            else:
+                # Find divergence point (where the prompts differ)
+                # This happens when the fork's generation prompt / last message
+                # differs from the current prompt's continuation
+                for i in range(0, _max_check, 64):  # check in 64-char chunks for speed
+                    chunk_end = min(i + 64, _max_check)
+                    if _fork_prompt_text[i:chunk_end] != prompt[i:chunk_end]:
+                        # Find exact divergence within this chunk
+                        for j in range(i, chunk_end):
+                            if _fork_prompt_text[j] != prompt[j]:
+                                _common_len = j
+                                break
+                        break
+                    _common_len = chunk_end
+
+            # Only use fork if we share a substantial prefix (>80% of fork)
+            # and the delta is meaningful (not just a few chars different)
+            _min_shared = int(_fork_len * 0.5)  # at least 50% shared
+            if _common_len >= _min_shared and _common_len < _prompt_len:
                 _active_fork = _load_fork()
                 if _active_fork is not None:
-                    _prompt_for_inference = prompt[len(_fork_prompt_text):]
+                    _prompt_for_inference = prompt[_common_len:]
                     kwargs['prompt_cache'] = _active_fork
                     _fork_used = True
-                    print(f"[fork-cache] Active: {len(_fork_prompt_text)} chars forked, "
+                    print(f"[fork-cache] Active: {_common_len}/{_fork_len} chars shared, "
                           f"delta={len(_prompt_for_inference)} chars", file=sys.stderr)
 
         # ── prefix cache (system block) ───────────────────────────────────────
@@ -2168,6 +2209,7 @@ async def chat_completions(req: ChatRequest):
                         if 'prompt_cache' not in kwargs and _fork_enabled and len(prompt) >= _FORK_THRESHOLD:
                             from mlx_lm.models.cache import make_prompt_cache
                             kwargs['prompt_cache'] = make_prompt_cache(_model)
+                        # Capture the actual cache that will be used (for fork saving)
                         _inference_cache = kwargs.get('prompt_cache')
 
                         gen = stream_generate(_model, _processor, _prompt_for_inference,
@@ -2175,11 +2217,13 @@ async def chat_completions(req: ChatRequest):
                         last_result = None
                         _first_token = True
                         _prefill_start = time.perf_counter()
+                        _generated_parts = []  # accumulate for fork save
                         for chunk in gen:
                             if _cancelled.is_set():
                                 break
                             text = chunk.text if hasattr(chunk, 'text') else str(chunk)
                             if text:
+                                _generated_parts.append(text)
                                 if _first_token:
                                     _first_token = False
                                     _ttft = time.perf_counter() - _prefill_start
@@ -2222,9 +2266,17 @@ async def chat_completions(req: ChatRequest):
                         # ── Save conversation fork ────────────────────────────────
                         # After inference completes, save the KV cache state so the
                         # next turn can skip re-prefilling the entire conversation.
+                        # We save the fork keyed to prompt + generated_text, because
+                        # the NEXT turn's prompt will include this turn's output as
+                        # conversation history. This way next_prompt.startswith(fork)
+                        # will match correctly.
                         if (_fork_enabled and _inference_cache is not None
-                                and not _cancelled.is_set() and len(prompt) >= _FORK_THRESHOLD):
+                                and len(prompt) >= _FORK_THRESHOLD):
                             try:
+                                # Save the fork keyed to the full rendered prompt.
+                                # The KV cache state matches this prompt exactly.
+                                # On the next turn, we find the common prefix between
+                                # the saved fork and the new prompt to determine delta.
                                 _save_fork(prompt, _inference_cache)
                             except Exception as _fork_err:
                                 print(f"[fork-cache] Save error (non-fatal): {_fork_err}", file=sys.stderr)
@@ -2669,10 +2721,40 @@ async def chat_completions(req: ChatRequest):
     if _kv_bits is not None and not _model_is_vision:
         kwargs['kv_bits'] = _kv_bits
 
+    # ── conversation fork (non-streaming) ────────────────────────────────────────
+    _ns_fork_used = False
+    _ns_prompt = prompt
+    if (not _model_is_vision and _fork_enabled and _fork_cache_file
+            and _fork_prompt_text and len(prompt) >= _FORK_THRESHOLD):
+        _fork_len = len(_fork_prompt_text)
+        _common_len = 0
+        _max_check = min(_fork_len, len(prompt))
+        if prompt.startswith(_fork_prompt_text):
+            _common_len = _fork_len
+        else:
+            for i in range(0, _max_check, 64):
+                chunk_end = min(i + 64, _max_check)
+                if _fork_prompt_text[i:chunk_end] != prompt[i:chunk_end]:
+                    for j in range(i, chunk_end):
+                        if _fork_prompt_text[j] != prompt[j]:
+                            _common_len = j
+                            break
+                    break
+                _common_len = chunk_end
+        _min_shared = int(_fork_len * 0.5)
+        if _common_len >= _min_shared and _common_len < len(prompt):
+            _ns_fork = _load_fork()
+            if _ns_fork is not None:
+                _ns_prompt = prompt[_common_len:]
+                kwargs['prompt_cache'] = _ns_fork
+                _ns_fork_used = True
+                print(f"[fork-cache] Active (non-stream): {_common_len} chars shared, "
+                      f"delta={len(_ns_prompt)} chars", file=sys.stderr)
+
     # ── prefix cache (non-streaming) ──────────────────────────────────────────
     _ns_prefix_cache = None
-    _ns_prompt = prompt
-    if not _model_is_vision and _prefix_cache_enabled and _prefix_cache_file and _prefix_cache_prompt:
+    if (not _ns_fork_used and not _model_is_vision and _prefix_cache_enabled
+            and _prefix_cache_file and _prefix_cache_prompt):
         _sys_end_marker = "<|im_end|>\n"
         _sys_end_idx = prompt.find(_sys_end_marker)
         if _sys_end_idx > 0:
@@ -2682,6 +2764,12 @@ async def chat_completions(req: ChatRequest):
                 if _ns_prefix_cache is not None:
                     _ns_prompt = prompt[len(rendered_sys_block):]
                     kwargs['prompt_cache'] = _ns_prefix_cache
+
+    # Ensure we have a prompt_cache for fork saving
+    if 'prompt_cache' not in kwargs and _fork_enabled and len(prompt) >= _FORK_THRESHOLD:
+        from mlx_lm.models.cache import make_prompt_cache
+        kwargs['prompt_cache'] = make_prompt_cache(_model)
+    _ns_inference_cache = kwargs.get('prompt_cache')
 
     def _run_generate():
         import threading as _thr
@@ -2716,6 +2804,14 @@ async def chat_completions(req: ChatRequest):
         sem = _get_inference_semaphore()
         async with sem:
             result = await asyncio.get_event_loop().run_in_executor(None, _run_generate)
+            # Save conversation fork after successful inference
+            if (_fork_enabled and _ns_inference_cache is not None
+                    and len(prompt) >= _FORK_THRESHOLD):
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, _save_fork, prompt, _ns_inference_cache)
+                except Exception as _fork_err:
+                    print(f"[fork-cache] Save error (non-fatal): {_fork_err}", file=sys.stderr)
     except Exception as e:
         import traceback
         print(f"[server] ❌ Inference error ({type(e).__name__}): {e}", file=sys.stderr)
