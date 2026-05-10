@@ -1007,6 +1007,82 @@ const LSP_TOOL_SETS = {
   'tester': ['lsp_get_diagnostics'],
 }
 
+// ── Schema Pruning ────────────────────────────────────────────────────────────
+// Strips non-essential metadata from tool JSON schemas to reduce token usage.
+// Preserves: type, properties, required, enum, items (structural contract).
+// Removes: description on nested properties, examples, default, title.
+// Top-level function description is kept (model needs it for tool selection).
+// Estimated savings: 30-40% of tool schema tokens.
+
+const SCHEMA_PRUNE_LEVEL = process.env.SCHEMA_PRUNE || 'safe'
+// 'off'        — no pruning (original behavior)
+// 'safe'       — remove nested descriptions, examples, default, title
+// 'aggressive' — also truncate top-level description to 140 chars
+
+/**
+ * Deep-prune a JSON schema object, removing non-structural metadata.
+ * Operates recursively on nested properties and items.
+ * @param {object} schema - A JSON schema (parameters object)
+ * @param {boolean} isRoot - Whether this is the top-level parameters object
+ * @returns {object} Pruned copy (never mutates the original)
+ */
+function _pruneSchema(schema, isRoot = true) {
+  if (!schema || typeof schema !== 'object') return schema
+
+  const pruned = {}
+
+  // Always keep structural keys
+  if (schema.type) pruned.type = schema.type
+  if (schema.required) pruned.required = schema.required
+  if (schema.enum) pruned.enum = schema.enum
+
+  // Keep description only at root level (the parameters object itself doesn't
+  // usually have one — it's on the function). For nested properties, drop it.
+  if (isRoot && schema.description) pruned.description = schema.description
+
+  // Recurse into properties
+  if (schema.properties) {
+    pruned.properties = {}
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      pruned.properties[key] = _pruneSchema(prop, false)
+    }
+  }
+
+  // Recurse into items (arrays)
+  if (schema.items) {
+    pruned.items = _pruneSchema(schema.items, false)
+  }
+
+  return pruned
+}
+
+/**
+ * Prune a single tool definition, returning a lightweight copy.
+ * The original TOOL_DEFS array is never mutated.
+ * @param {object} toolDef - { type: 'function', function: { name, description, parameters } }
+ * @returns {object} Pruned tool definition
+ */
+function pruneToolDef(toolDef) {
+  if (SCHEMA_PRUNE_LEVEL === 'off') return toolDef
+  if (!toolDef?.function) return toolDef
+
+  const fn = toolDef.function
+  let description = fn.description || ''
+
+  if (SCHEMA_PRUNE_LEVEL === 'aggressive' && description.length > 140) {
+    description = description.slice(0, 137) + '...'
+  }
+
+  return {
+    type: toolDef.type,
+    function: {
+      name: fn.name,
+      description,
+      parameters: _pruneSchema(fn.parameters, true),
+    },
+  }
+}
+
 /**
  * Build the tool definitions array, merging built-in TOOL_DEFS with
  * role-specific LSP tools when the LSP manager is ready.
@@ -1052,6 +1128,10 @@ function getToolDefs(lspManager, agentRole, allowedTools) {
         tools.push(LSP_TOOL_DEFS[name])
       }
     }
+  }
+  // Apply schema pruning to reduce token cost
+  if (SCHEMA_PRUNE_LEVEL !== 'off') {
+    tools = tools.map(pruneToolDef)
   }
   return tools
 }
@@ -8480,4 +8560,4 @@ ${autoEdit ? '\nAuto-edit mode: proceed with all changes without asking for conf
   }
 }
 
-module.exports = { DirectBridge, WindowSink, CallbackSink, WorkerSink, InputRequester, WindowInputRequester, executeTool, getToolDefs, LSP_TOOL_SETS, LSP_TOOL_DEFS, buildProjectContext, detectEntryPoints, formatSymbolOutline, detectContentType, undoList, undoApply, undoClear, undoRecord, sinkBus }
+module.exports = { DirectBridge, WindowSink, CallbackSink, WorkerSink, InputRequester, WindowInputRequester, executeTool, getToolDefs, pruneToolDef, LSP_TOOL_SETS, LSP_TOOL_DEFS, buildProjectContext, detectEntryPoints, formatSymbolOutline, detectContentType, undoList, undoApply, undoClear, undoRecord, sinkBus }
