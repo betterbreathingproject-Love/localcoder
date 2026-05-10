@@ -1804,13 +1804,17 @@ async def chat_completions(req: ChatRequest):
     # runs without prefix cache (no TTFT benefit); subsequent requests get it.
     # Building synchronously before inference caused hangs on large-context
     # models where make_prompt_cache + prefill took 10-30s.
+    #
+    # SEMANTIC PREFIX SPLITTING: We cache the full rendered system block
+    # (including tool definitions + format instructions), not just the raw
+    # system message. This means the prefix cache covers ~5-8K chars of
+    # stable content that's identical across all turns in a session.
     _pending_cache_build = None
     if (not _model_is_vision and _prefix_cache_enabled
             and _prefix_cache_file is None and not has_images):
-        sys_prompt_text = get_system_prompt(req.messages)
-        if sys_prompt_text:
-            print(f"[prefix-cache] Will build cache after first inference completes...", file=sys.stderr)
-            _pending_cache_build = sys_prompt_text
+        # We'll extract the full rendered system block after prompt is built
+        # (deferred — set a flag and extract from the rendered prompt below)
+        _pending_cache_build = "__extract_from_prompt__"
 
     # Smart cache clearing and memory pressure checks.
     # These Metal API calls must hold _metal_lock to avoid racing with
@@ -1989,25 +1993,32 @@ async def chat_completions(req: ChatRequest):
 
         # ── prefix cache ──────────────────────────────────────────────────────
         # Load the saved system-prompt KV state from disk and pass only the
-        # delta tokens (everything after the system prompt) to stream_generate.
+        # delta tokens (everything after the system block) to stream_generate.
         # Benchmark: 1.8–3.1× TTFT speedup on typical agentic sessions.
         # Only applies to text-only models with a matching cached system prompt.
+        #
+        # SEMANTIC PREFIX SPLITTING: The Jinja template renders tools INSIDE
+        # the system block: <|im_start|>system\n# Tools\n...\n{sys content}<|im_end|>\n
+        # We cache the ENTIRE rendered system block (tools + format instructions
+        # + system content), so the prefix cache covers ~5-8K chars of stable
+        # content that's identical across turns within a session.
         _active_prefix_cache = None
         _prompt_for_inference = prompt  # may be replaced with delta below
         if not _model_is_vision and _prefix_cache_enabled and _prefix_cache_file and _prefix_cache_prompt:
-            sys_prompt_text = get_system_prompt(req.messages)
-            if sys_prompt_text and _prefix_cache_prompt == sys_prompt_text:
-                # Build the rendered system prompt prefix as it appears in the
-                # full prompt string, so we can extract the delta correctly.
-                # The Jinja template wraps it as <|im_start|>system\n...<|im_end|>\n
-                rendered_sys = f"<|im_start|>system\n{sys_prompt_text}<|im_end|>\n"
-                delta = _extract_delta(prompt, rendered_sys)
-                if delta != prompt:  # extraction succeeded
+            # Extract the full rendered system block from the prompt.
+            # It starts with <|im_start|>system\n and ends with <|im_end|>\n
+            _sys_end_marker = "<|im_end|>\n"
+            _sys_end_idx = prompt.find(_sys_end_marker)
+            if _sys_end_idx > 0:
+                rendered_sys_block = prompt[:_sys_end_idx + len(_sys_end_marker)]
+                # Check if this matches what we cached (by comparing the full block)
+                if rendered_sys_block == _prefix_cache_prompt:
+                    delta = prompt[len(rendered_sys_block):]
                     _active_prefix_cache = _load_prefix_cache()
                     if _active_prefix_cache is not None:
                         _prompt_for_inference = delta
                         kwargs['prompt_cache'] = _active_prefix_cache
-                        print(f"[prefix-cache] Active: {len(prompt) - len(delta)} chars skipped, "
+                        print(f"[prefix-cache] Active: {len(rendered_sys_block)} chars cached, "
                               f"delta={len(delta)} chars", file=sys.stderr)
 
         # Clear cache before large prompts (>50k chars) to maximize available memory
@@ -2496,13 +2507,20 @@ async def chat_completions(req: ChatRequest):
         # Deferred prefix cache build — runs after the first inference response
         # is fully sent, so the user isn't blocked waiting for cache allocation.
         if _pending_cache_build:
-            _deferred_prompt = _pending_cache_build
-            async def _deferred_cache_build():
-                sem = _get_inference_semaphore()
-                async with sem:
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, _build_prefix_cache, _deferred_prompt)
-            asyncio.ensure_future(_deferred_cache_build())
+            # Extract the full rendered system block from the prompt
+            # (includes tools + format instructions + system content)
+            _sys_end_marker = "<|im_end|>\n"
+            _sys_end_idx = prompt.find(_sys_end_marker)
+            if _sys_end_idx > 0:
+                _deferred_prompt = prompt[:_sys_end_idx + len(_sys_end_marker)]
+                print(f"[prefix-cache] Will build cache after first inference "
+                      f"({len(_deferred_prompt)} chars, includes tools)...", file=sys.stderr)
+                async def _deferred_cache_build():
+                    sem = _get_inference_semaphore()
+                    async with sem:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, _build_prefix_cache, _deferred_prompt)
+                asyncio.ensure_future(_deferred_cache_build())
 
         return response
 
@@ -2540,14 +2558,14 @@ async def chat_completions(req: ChatRequest):
     _ns_prefix_cache = None
     _ns_prompt = prompt
     if not _model_is_vision and _prefix_cache_enabled and _prefix_cache_file and _prefix_cache_prompt:
-        sys_prompt_text = get_system_prompt(req.messages)
-        if sys_prompt_text and _prefix_cache_prompt == sys_prompt_text:
-            rendered_sys = f"<|im_start|>system\n{sys_prompt_text}<|im_end|>\n"
-            delta = _extract_delta(prompt, rendered_sys)
-            if delta != prompt:
+        _sys_end_marker = "<|im_end|>\n"
+        _sys_end_idx = prompt.find(_sys_end_marker)
+        if _sys_end_idx > 0:
+            rendered_sys_block = prompt[:_sys_end_idx + len(_sys_end_marker)]
+            if rendered_sys_block == _prefix_cache_prompt:
                 _ns_prefix_cache = _load_prefix_cache()
                 if _ns_prefix_cache is not None:
-                    _ns_prompt = delta
+                    _ns_prompt = prompt[len(rendered_sys_block):]
                     kwargs['prompt_cache'] = _ns_prefix_cache
 
     def _run_generate():
