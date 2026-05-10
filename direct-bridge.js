@@ -5371,9 +5371,14 @@ When the user wants you to take action (write code, fix bugs, etc.), tell them t
           }
 
           messages.push(_buildAssistantMsg(text, _reasoningContent))
+          // Extract the file target from the planning text to give a concrete nudge
+          const _planFileMatch = text.match(/(?:fix|update|edit|modify|create|add|write|start with)\s+[`'"]?([a-zA-Z0-9_\-./]+\.[a-zA-Z]+)/i)
+          const _planTarget = _planFileMatch ? _planFileMatch[1] : null
           messages.push({
             role: 'system',
-            content: 'You described what you plan to do but did not take action. Use your tools NOW. Call read_file, edit_file, write_file, or bash to actually do the work. Do not just describe — act.',
+            content: _planTarget
+              ? `STOP PLANNING. You just described what you want to do to "${_planTarget}" but did not act. Your VERY NEXT response must be a tool call — no text. Call read_file("${_planTarget}") if you need its contents, or write_file/edit_file to modify it directly. Do NOT describe your plan again.`
+              : 'STOP PLANNING. You described what you want to do but did not act. Your VERY NEXT response must be a tool call — no text. Call read_file, write_file, edit_file, or bash. Do NOT restate your plan.',
           })
           continue
           }
