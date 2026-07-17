@@ -208,7 +208,7 @@
       <div class="card">
         <div class="card-icon">🔀</div>
         <h3>Task Orchestration</h3>
-        <p>Complex work is broken into a task graph. The orchestrator runs tasks in parallel where possible.</p>
+        <p>Complex work is broken into a task graph, and each step is routed to the specialist agent best suited to it.</p>
       </div>
       <div class="card">
         <div class="card-icon">🔭</div>
@@ -273,7 +273,7 @@
       <div class="card">
         <div class="card-icon">🧩</div>
         <h3>Subagents</h3>
-        <p>Spins up read-only helper agents on a separate inference slot for parallel research and search.</p>
+        <p>Spins up read-only helper agents to handle research and search, keeping the main agent focused.</p>
       </div>
       <div class="card">
         <div class="card-icon">🛠️</div>
@@ -311,7 +311,7 @@
         <div class="step-num">2</div>
         <div>
           <h3>Tasks are generated</h3>
-          <p>The agent breaks your feature into a task graph — a DAG of steps with dependencies and parallel paths.</p>
+          <p>The agent breaks your feature into a task graph — a DAG of steps with dependencies, each routed to a specialist.</p>
         </div>
       </div>
       <div class="step">
@@ -349,7 +349,7 @@
       <div class="chip"><span class="chip-dot" style="background:#fbbf24"></span> General</div>
     </div>
     <p style="margin-top: 20px; font-size: 13px; color: var(--muted);">
-      The <strong style="color:var(--text)">orchestrator</strong> runs up to 3 agents concurrently. Failed tasks retry automatically with enriched context. The fast model handles routing so the big model stays focused on real work.
+      The <strong style="color:var(--text)">orchestrator</strong> routes each task to the specialist agent best suited to it. Failed tasks retry automatically with enriched context. The fast model handles routing so the big model stays focused on real work.
     </p>
   </div>
 </section>
