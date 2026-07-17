@@ -32,7 +32,7 @@ No API keys. No subscriptions. No internet required.
 
 **A team of local AI agents**
 - 🧠 **On-device inference** — Qwen 3.6 35B (plus a fast 0.8B assistant) run on your Mac's GPU via MLX. OpenAI-compatible API, fully offline.
-- 🔀 **Multi-agent orchestration** — Features are split into a task graph; up to 3 specialised agents work in parallel.
+- 🔀 **Role-based agent delegation** — Each task is routed to a specialised agent (explorer, implementer, debugger, tester…). They share one local model, so they take turns rather than run at once.
 - 🧩 **Subagents** — The main agent spawns read-only helper agents on a separate inference slot for research and search.
 - 🩹 **Learned auto-fixer** — Records its own bad→good code fixes and auto-applies them the next time it hits the same mistake.
 - 🔭 **LSP-safe edits** — Language-server blast-radius and diagnostic checks before every file write.
@@ -148,7 +148,7 @@ You describe a feature
         ↓
    Orchestrator dispatches tasks to specialised agents
         ↓
-   Agents work in parallel: explore → gather context → implement → verify
+   Each step goes to the right specialist: explore → gather → implement → verify
         ↓
    You review, inject context, or redirect at any point
 ```
