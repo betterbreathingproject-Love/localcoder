@@ -122,20 +122,7 @@ System block (tools + instructions + prompt) cached after first turn:
 - Cold (no cache): 5.1s
 - Warm (cache hit): 0.4s — **13x faster**
 
-Across a full session, prefix caching compounds: on a 20-turn agent session (~27K token context), reusing 26K cached tokens cuts per-turn time-to-first-token from ~40s to ~1.5s — roughly **13 minutes saved** over the session.
-
-### Speculative Decoding (Draft Model)
-
-The fast 0.8B model proposes several tokens per step that the 35B model verifies in a single pass. Draft depth adapts to context size (benchmarked on M1 Max, Qwen3.6-35B-A3B):
-
-| Context | Draft depth | Acceptance | Speedup |
-|---|---|---|---|
-| < 15K tokens | 6 | ~65% | **1.8×** |
-| 15–30K | 4 | ~50% | 1.4× |
-| 30–50K | 3 | ~35% | 1.2× |
-| > 50K | 2 | ~25% | 1.1× |
-
-Typical coding-task speedup: **1.5–2.5×**.
+Across a full session, prefix caching compounds: on a 20-turn agent session (~27K token context), reusing the cached prefix keeps per-turn time-to-first-token low instead of re-prefilling the whole conversation every turn — the single biggest speedup in the app.
 
 ---
 
